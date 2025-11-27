@@ -182,6 +182,252 @@ app.post('/api/consultar-cpf', async (req, res) => {
   }
 });
 
+// ===================================================================
+// 🔍 CONSULTA CNPJ
+// ===================================================================
+
+// Função para consultar CNPJ na API open.cnpja.com
+async function consultarAPIExternaCNPJ(cnpj) {
+  try {
+    const cnpjLimpo = cnpj.replace(/\D/g, '');
+    
+    if (cnpjLimpo.length !== 14) {
+      throw new Error("CNPJ deve conter 14 dígitos!");
+    }
+    
+    const url = `https://open.cnpja.com/office/${cnpjLimpo}`;
+    
+    console.log(`Consultando CNPJ na API: ${cnpjLimpo}`);
+    
+    const response = await fetch(url, { timeout: 10000 });
+    
+    if (!response.ok) {
+      throw new Error(`Erro na API: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    console.log('Resposta completa da API CNPJ:', result);
+
+    return result;
+
+  } catch (error) {
+    console.error('Erro na API externa de CNPJ:', error);
+    throw new Error(`Erro na consulta CNPJ: ${error.message}`);
+  }
+}
+
+// Rota para consultar CNPJ
+app.post('/api/consultar-cnpj', async (req, res) => {
+  try {
+    const { cnpj } = req.body;
+
+    if (!cnpj) {
+      return res.status(400).json({
+        success: false,
+        error: 'CNPJ é obrigatório'
+      });
+    }
+
+    // Verificar se o CNPJ já existe no banco de dados
+    const { data: existingEmpresa, error: queryError } = await supabase
+      .from('empresas')
+      .select('*')
+      .eq('cnpj', cnpj.replace(/\D/g, ''))
+      .single();
+
+    if (queryError && queryError.code !== 'PGRST116') {
+      console.error('Erro ao consultar CNPJ no banco:', queryError);
+      return res.status(500).json({
+        success: false,
+        error: 'Erro interno ao consultar CNPJ'
+      });
+    }
+
+    if (existingEmpresa) {
+      return res.json({
+        success: false,
+        error: 'CNPJ já cadastrado no sistema',
+        cnpj_existente: true,
+        data: null
+      });
+    }
+
+    // Consulta na API externa de CNPJ
+    const dadosCNPJ = await consultarAPIExternaCNPJ(cnpj);
+
+    if (dadosCNPJ) {
+      return res.json({
+        success: true,
+        data: dadosCNPJ
+      });
+    } else {
+      return res.json({
+        success: false,
+        error: 'CNPJ não encontrado na base de dados oficial',
+        cnpj_existente: false
+      });
+    }
+
+  } catch (error) {
+    console.error('Erro na consulta de CNPJ:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    });
+  }
+});
+
+// ===================================================================
+// 💼 CADASTRO DE EMPRESAS
+// ===================================================================
+
+// Rota para cadastrar empresa
+app.post('/api/empresas', async (req, res) => {
+  try {
+    const empresaData = req.body;
+
+    // Validar campos obrigatórios
+    const camposObrigatorios = ['CNPJ', 'NOME_FANTASIA', 'RAZAO_SOCIAL'];
+    const camposFaltantes = camposObrigatorios.filter(campo => !empresaData[campo]);
+
+    if (camposFaltantes.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Campos obrigatórios faltando: ${camposFaltantes.join(', ')}`
+      });
+    }
+
+    // Verificar se CNPJ já existe
+    const { data: existingEmpresa, error: checkError } = await supabase
+      .from('empresas')
+      .select('cnpj')
+      .eq('cnpj', empresaData.CNPJ)
+      .single();
+
+    if (existingEmpresa) {
+      return res.status(400).json({
+        success: false,
+        error: 'CNPJ já cadastrado no sistema'
+      });
+    }
+
+    // Preparar dados para inserção
+    const dadosInserir = {
+      cnpj: empresaData.CNPJ,
+      nome_fantasia: empresaData.NOME_FANTASIA,
+      razao_social: empresaData.RAZAO_SOCIAL,
+      data_abertura: empresaData.DATA_ABERTURA,
+      situacao: empresaData.SITUACAO,
+      data_situacao: empresaData.DATA_SITUACAO,
+      natureza_juridica: empresaData.NATUREZA_JURIDICA,
+      capital_social: empresaData.CAPITAL_SOCIAL,
+      porte: empresaData.PORTE,
+      simples: empresaData.SIMPLES,
+      mei: empresaData.MEI,
+      tipo_empresa: empresaData.TIPO_EMPRESA,
+      end_cep: empresaData.END_CEP,
+      end_logradouro: empresaData.END_LOGRADOURO,
+      end_numero: empresaData.END_NUMERO,
+      end_bairro: empresaData.END_BAIRRO,
+      end_cidade: empresaData.END_CIDADE,
+      end_estado: empresaData.END_ESTADO,
+      end_complemento: empresaData.END_COMPLEMENTO,
+      telefone1: empresaData.TELEFONE1,
+      telefone2: empresaData.TELEFONE2,
+      email: empresaData.EMAIL,
+      cnae_principal: empresaData.CNAE_PRINCIPAL,
+      descricao_cnae_principal: empresaData.DESCRICAO_CNAE_PRINCIPAL,
+      cnaes_secundarios: empresaData.CNAES_SECUNDARIOS,
+      data_criacao: new Date().toISOString()
+    };
+
+    // Inserir no Supabase
+    const { data, error } = await supabase
+      .from('empresas')
+      .insert([dadosInserir])
+      .select();
+
+    if (error) {
+      console.error('Erro ao inserir empresa:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Erro ao cadastrar empresa no banco de dados'
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Empresa cadastrada com sucesso!',
+      data: data[0]
+    });
+
+  } catch (error) {
+    console.error('Erro no cadastro de empresa:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    });
+  }
+});
+
+// ===================================================================
+// 📋 LISTAGEM DE EMPRESAS
+// ===================================================================
+
+// Rota para listar empresas
+app.get('/api/empresas', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('empresas')
+      .select('*')
+      .order('data_criacao', { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar empresas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar empresas'
+    });
+  }
+});
+
+// Rota para buscar empresa por ID
+app.get('/api/empresas/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from('empresas')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data
+    });
+
+  } catch (error) {
+    console.error('Erro ao buscar empresa:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Empresa não encontrada'
+    });
+  }
+});
 // Cadastro de funcionário
 app.post('/api/funcionarios', async (req, res) => {
   try {
@@ -459,3 +705,4 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
