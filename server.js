@@ -27,7 +27,6 @@ app.get('/api/health', (req, res) => {
 // Função para upload de foto para o Supabase Storage
 async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
   try {
-    // Extrair o tipo MIME e os dados base64
     const matches = fotoBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) {
       throw new Error('Formato de imagem base64 inválido');
@@ -37,14 +36,10 @@ async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
     const base64Data = matches[2];
     const extension = mimeType.split('/')[1];
     
-    // Criar buffer a partir dos dados base64
     const buffer = Buffer.from(base64Data, 'base64');
-    
-    // Nome do arquivo único usando CPF e matrícula
     const fileName = `foto-${cpf}-${matricula}-${Date.now()}.${extension}`;
     const filePath = `funcionarios/${fileName}`;
 
-    // Fazer upload para o Supabase Storage
     const { data, error } = await supabase.storage
       .from('fotos-funcionarios')
       .upload(filePath, buffer, {
@@ -56,7 +51,6 @@ async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
       throw error;
     }
 
-    // Obter URL pública da imagem
     const { data: { publicUrl } } = supabase.storage
       .from('fotos-funcionarios')
       .getPublicUrl(filePath);
@@ -66,6 +60,59 @@ async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
   } catch (error) {
     console.error('Erro no upload da foto:', error);
     throw new Error(`Falha no upload da foto: ${error.message}`);
+  }
+}
+
+// Função para consulta real na API de CPF
+async function consultarAPIExternaCPF(cpf) {
+  try {
+    // Limpa formatação para envio
+    const cpfClean = cpf.replace(/\D/g, '');
+    
+    const url = `https://apicpf.com/api/consulta?cpf=${cpfClean}`;
+    const headers = {
+      "X-API-KEY": "7616f38484798083668eea3d51d986edeec5c20a93c24a7aea49cc3f0697c929"
+    };
+
+    console.log(`Consultando CPF na API: ${cpfClean}`);
+    
+    const response = await fetch(url, { 
+      headers: headers,
+      timeout: 15000 
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Erro na API: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log('Resposta da API CPF:', data);
+
+    // Verifica se a API retornou dados válidos
+    if (data && data.nome) {
+      // Formata a data de nascimento para DD/MM/AAAA (se necessário)
+      let dataNascimento = data.data_nascimento;
+      
+      // Se a data estiver no formato AAAA-MM-DD, converte para DD/MM/AAAA
+      if (dataNascimento && dataNascimento.includes('-')) {
+        const [ano, mes, dia] = dataNascimento.split('-');
+        dataNascimento = `${dia}/${mes}/${ano}`;
+      }
+
+      return {
+        nome: data.nome,
+        data_nascimento: dataNascimento,
+        sexo: data.sexo // API retorna 'M' ou 'F'
+      };
+    } else {
+      // Se a API não retornou nome, considera que não encontrou
+      console.log('CPF não encontrado na API');
+      return null;
+    }
+
+  } catch (error) {
+    console.error('Erro na API externa de CPF:', error);
+    return null;
   }
 }
 
@@ -81,15 +128,15 @@ app.post('/api/consultar-cpf', async (req, res) => {
       });
     }
 
-    // Verificar se o CPF já existe no banco de dados
+    // Verificar se o CPF já existe no banco de dados (para evitar duplicação)
     const { data: existingFuncionario, error: queryError } = await supabase
       .from('funcionarios')
       .select('*')
-      .eq('cpf', cpf)
+      .eq('cpf', cpf.replace(/\D/g, ''))
       .single();
 
-    if (queryError && queryError.code !== 'PGRST116') { // PGRST116 = não encontrado
-      console.error('Erro ao consultar CPF:', queryError);
+    if (queryError && queryError.code !== 'PGRST116') {
+      console.error('Erro ao consultar CPF no banco:', queryError);
       return res.status(500).json({
         success: false,
         error: 'Erro interno ao consultar CPF'
@@ -105,7 +152,7 @@ app.post('/api/consultar-cpf', async (req, res) => {
       });
     }
 
-    // Simulação de consulta a API externa de CPF
+    // Consulta REAL na API externa de CPF
     const dadosCPF = await consultarAPIExternaCPF(cpf);
 
     if (dadosCPF) {
@@ -116,7 +163,7 @@ app.post('/api/consultar-cpf', async (req, res) => {
     } else {
       return res.json({
         success: false,
-        error: 'CPF não encontrado na base de dados externa',
+        error: 'CPF não encontrado na base de dados oficial',
         cpf_existente: false
       });
     }
@@ -129,43 +176,6 @@ app.post('/api/consultar-cpf', async (req, res) => {
     });
   }
 });
-
-// Função para simular consulta a API externa de CPF
-async function consultarAPIExternaCPF(cpf) {
-  try {
-    // EM PRODUÇÃO: Substituir por chamada real para API de consulta de CPF
-    // Exemplo: Receita WS, Serpro, ou outra API oficial
-    
-    // Simulação de delay de rede
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Dados mockados para demonstração
-    // Em produção, isso viria da API real
-    const dadosMockados = {
-      nome: "FULANO DA SILVA",
-      data_nascimento: "15/03/1985",
-      sexo: "M"
-    };
-
-    // Simulação: retorna dados apenas para CPFs específicos para demonstração
-    const cpfsComDados = [
-      '12345678909',
-      '98765432100',
-      '11122233344'
-    ];
-
-    if (cpfsComDados.includes(cpf)) {
-      return dadosMockados;
-    }
-
-    // Para outros CPFs, simula que não encontrou dados
-    return null;
-
-  } catch (error) {
-    console.error('Erro na API externa de CPF:', error);
-    return null;
-  }
-}
 
 // Cadastro de funcionário
 app.post('/api/funcionarios', async (req, res) => {
@@ -209,8 +219,6 @@ app.post('/api/funcionarios', async (req, res) => {
         console.log('Foto uploadada com sucesso:', fotoUrl);
       } catch (uploadError) {
         console.error('Erro no upload da foto:', uploadError);
-        // Não impedir o cadastro se houver erro na foto
-        // Apenas registrar o erro e continuar sem foto
       }
     }
 
@@ -243,7 +251,7 @@ app.post('/api/funcionarios', async (req, res) => {
       estado: funcionarioData.END_ESTADO,
       complemento: funcionarioData.END_COMPLEMENTO,
       tamanho_fardamento: funcionarioData.TAMANHO_FARDAMENTO,
-      foto_url: fotoUrl, // URL da foto no Storage
+      foto_url: fotoUrl,
       data_criacao: new Date().toISOString()
     };
 
@@ -273,7 +281,7 @@ app.post('/api/funcionarios', async (req, res) => {
       success: true,
       message: 'Funcionário cadastrado com sucesso!',
       data: data[0],
-      foto_url: fotoUrl // Retornar também a URL da foto
+      foto_url: fotoUrl
     });
 
   } catch (error) {
@@ -338,7 +346,6 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       data_atualizacao: new Date().toISOString()
     };
 
-    // Adicionar URL da foto se foi feito upload
     if (fotoUrl) {
       dadosAtualizar.foto_url = fotoUrl;
     }
@@ -441,6 +448,7 @@ app.get('/api/funcionarios/:id', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Supabase URL: ${SUPABASE_URL}`);
+  console.log(`🔐 API CPF: Integrada com apicpf.com`);
   console.log(`🖼️  Storage de fotos: fotos-funcionarios`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
 });
