@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from supabase import create_client, Client
 import logging
+import re
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,56 @@ except Exception as e:
 # Variável para controlar se o servidor está "acordado"
 last_request_time = time.time()
 
+# ===================================================================
+# 🔍 FUNÇÕES DE CONSULTA CPF (Integradas do api_services.py)
+# ===================================================================
+
+def search_cpf(cpf):
+    """
+    Busca dados de pessoa física por CPF.
+    API Key fornecida pelo usuário.
+    """
+    # Limpa formatação para envio
+    cpf_clean = ''.join(filter(str.isdigit, cpf))
+    
+    url = f"https://apicpf.com/api/consulta?cpf={cpf_clean}"
+    headers = {
+        "X-API-KEY": "7616f38484798083668eea3d51d986edeec5c20a93c24a7aea49cc3f0697c929"
+    }
+    
+    try:
+        logger.info(f"Consultando CPF: {cpf_clean}")
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Resposta API CPF: {data}")
+        return data
+    except requests.RequestException as e:
+        logger.error(f"Erro na API CPF: {e}")
+        return None
+
+def search_cep(cep):
+    """
+    Busca um CEP na API ViaCEP.
+    """
+    cep_clean = ''.join(filter(str.isdigit, cep))
+    
+    if len(cep_clean) != 8:
+        return None
+    
+    url = f"https://viacep.com.br/ws/{cep_clean}/json/"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("erro"):
+            return None
+        return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Erro na requisição do CEP: {e}")
+        return None
+
 def formatar_data_iso(data_str):
     """Converte data DD/MM/AAAA para ISO"""
     try:
@@ -38,6 +89,20 @@ def formatar_data_iso(data_str):
         return data_str
     except:
         return data_str
+
+def formatar_data_br(data_iso):
+    """Converte data ISO para DD/MM/AAAA"""
+    try:
+        if data_iso and '-' in data_iso:
+            year, month, day = data_iso.split('-')
+            return f"{day}/{month}/{year}"
+        return data_iso
+    except:
+        return data_iso
+
+# ===================================================================
+# 🚀 ENDPOINTS DA API
+# ===================================================================
 
 @app.route('/')
 def home():
@@ -64,7 +129,7 @@ def funcionarios():
         elif request.method == 'POST':
             # Criar novo funcionário
             data = request.get_json()
-            logger.info(f"Dados recebidos: {data}")
+            logger.info(f"Dados recebidos para salvar: {data}")
             
             # Validar campos obrigatórios
             campos_obrigatorios = ['NOME', 'CPF', 'EMPRESA', 'SETOR', 'FUNÇÃO', 'MAT', 'ADMISSÃO']
@@ -121,9 +186,16 @@ def funcionario(id):
         if request.method == 'GET':
             response = supabase.table('funcionarios').select('*').eq('id', id).execute()
             if response.data:
+                # Converter datas para formato BR
+                funcionario = response.data[0]
+                if funcionario.get('NASC'):
+                    funcionario['NASC'] = formatar_data_br(funcionario['NASC'])
+                if funcionario.get('ADMISSÃO'):
+                    funcionario['ADMISSÃO'] = formatar_data_br(funcionario['ADMISSÃO'])
+                
                 return jsonify({
                     "success": True,
-                    "data": response.data[0]
+                    "data": funcionario
                 })
             return jsonify({
                 "success": False,
@@ -181,7 +253,7 @@ def consultar_cpf():
                 "error": "CPF deve conter 11 dígitos"
             }), 400
         
-        # Verificar se CPF já existe
+        # Verificar se CPF já existe no banco
         response = supabase.table('funcionarios').select('id, NOME').eq('CPF', cpf).execute()
         
         if response.data:
@@ -191,18 +263,50 @@ def consultar_cpf():
                 "cpf_existente": True
             }), 400
         
-        # Simulação de consulta CPF - Substitua pela API real
-        dados_simulados = {
-            "nome": "FULANO DA SILVA",
-            "situacao_cadastral": "Regular",
-            "data_nascimento": "15/05/1985",
-            "digito_verificador": "✅ Válido"
+        # Consultar API de CPF
+        logger.info(f"Iniciando consulta CPF para: {cpf}")
+        resultado = search_cpf(cpf)
+        
+        if not resultado:
+            return jsonify({
+                "success": False,
+                "error": "CPF não encontrado ou serviço temporariamente indisponível"
+            }), 404
+        
+        # Processar resposta da API CPF
+        logger.info(f"Resultado bruto da API CPF: {resultado}")
+        
+        # Mapear campos da resposta da API para nosso formato
+        # A API retorna: nome, data_nascimento, sexo
+        dados_pessoa = {
+            "nome": resultado.get('nome', ''),
+            "data_nascimento": resultado.get('data_nascimento', ''),
+            "sexo": resultado.get('sexo', '')
         }
+        
+        # Validar se temos dados suficientes
+        if not dados_pessoa['nome']:
+            return jsonify({
+                "success": False,
+                "error": "Dados não encontrados para este CPF"
+            }), 404
+        
+        # Converter sexo para formato do nosso sistema (M/F)
+        sexo_map = {
+            'MASCULINO': 'M',
+            'FEMININO': 'F',
+            'M': 'M',
+            'F': 'F'
+        }
+        
+        dados_pessoa['sexo'] = sexo_map.get(dados_pessoa['sexo'].upper(), '')
+        
+        logger.info(f"Dados processados da consulta CPF: {dados_pessoa}")
         
         return jsonify({
             "success": True,
-            "message": "Consulta realizada (dados simulados)",
-            "data": dados_simulados,
+            "message": "Consulta realizada com sucesso",
+            "data": dados_pessoa,
             "timestamp": datetime.now().isoformat()
         })
         
@@ -211,6 +315,52 @@ def consultar_cpf():
         return jsonify({
             "success": False,
             "error": f"Erro na consulta: {str(e)}"
+        }), 500
+
+@app.route('/api/consultar-cep', methods=['POST'])
+def consultar_cep():
+    global last_request_time
+    last_request_time = time.time()
+    
+    try:
+        data = request.get_json()
+        cep = data.get('cep', '').replace('-', '').replace('.', '')
+        
+        if len(cep) != 8:
+            return jsonify({
+                "success": False,
+                "error": "CEP deve conter 8 dígitos"
+            }), 400
+        
+        # Consultar API ViaCEP
+        resultado = search_cep(cep)
+        
+        if not resultado:
+            return jsonify({
+                "success": False,
+                "error": "CEP não encontrado"
+            }), 404
+        
+        # Mapear resposta do ViaCEP
+        endereco = {
+            "logradouro": resultado.get('logradouro', ''),
+            "bairro": resultado.get('bairro', ''),
+            "cidade": resultado.get('localidade', ''),
+            "estado": resultado.get('uf', ''),
+            "cep": resultado.get('cep', '')
+        }
+        
+        return jsonify({
+            "success": True,
+            "message": "CEP encontrado",
+            "data": endereco
+        })
+        
+    except Exception as e:
+        logger.error(f"Erro em /api/consultar-cep: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": f"Erro na consulta CEP: {str(e)}"
         }), 500
 
 @app.route('/api/empresas', methods=['GET'])
