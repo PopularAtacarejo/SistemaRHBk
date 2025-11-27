@@ -85,24 +85,29 @@ async function consultarAPIExternaCPF(cpf) {
       throw new Error(`Erro na API: ${response.status} ${response.statusText}`);
     }
 
-    const data = await response.json();
-    console.log('Resposta da API CPF:', data);
+    const result = await response.json();
+    console.log('Resposta completa da API CPF:', result);
 
     // Verifica se a API retornou dados válidos
-    if (data && data.nome) {
-      // Formata a data de nascimento para DD/MM/AAAA (se necessário)
-      let dataNascimento = data.data_nascimento;
+    if (result && result.code === 200 && result.data && result.data.nome) {
+      const data = result.data;
       
-      // Se a data estiver no formato AAAA-MM-DD, converte para DD/MM/AAAA
+      // Formata a data de nascimento para DD/MM/AAAA
+      let dataNascimento = data.data_nascimento;
       if (dataNascimento && dataNascimento.includes('-')) {
         const [ano, mes, dia] = dataNascimento.split('-');
         dataNascimento = `${dia}/${mes}/${ano}`;
       }
 
+      // Mapeia 'genero' para 'sexo'
+      let sexo = data.genero;
+      if (sexo === 'M') sexo = 'M';
+      else if (sexo === 'F') sexo = 'F';
+
       return {
         nome: data.nome,
         data_nascimento: dataNascimento,
-        sexo: data.sexo // API retorna 'M' ou 'F'
+        sexo: sexo
       };
     } else {
       // Se a API não retornou nome, considera que não encontrou
