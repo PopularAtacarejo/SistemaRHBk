@@ -438,7 +438,7 @@ async function buscarLideresDisponiveis() {
   try {
     const { data, error } = await supabase
       .from('funcionarios')
-      .select('id, nome, matricula')
+      .select('id, nome, matricula, secoes_lider')
       .eq('is_lider', true)
       .order('nome');
 
@@ -450,11 +450,28 @@ async function buscarLideresDisponiveis() {
   }
 }
 
+// Função para buscar líderes com suas seções
+async function buscarLideresComSecoes() {
+  try {
+    const { data, error } = await supabase
+      .from('funcionarios')
+      .select('id, nome, matricula, secoes_lider, empresa, setor, funcao')
+      .eq('is_lider', true)
+      .order('nome');
+
+    if (error) throw error;
+    return data || [];
+  } catch (error) {
+    console.error('Erro ao buscar líderes com seções:', error);
+    return [];
+  }
+}
+
 // ===================================================================
-// 👨‍💼 CADASTRO DE FUNCIONÁRIOS COM LÍDER E FOTO
+// 👨‍💼 CADASTRO DE FUNCIONÁRIOS COM LÍDER, FOTO E SEÇÕES DO LÍDER
 // ===================================================================
 
-// Cadastro de funcionário
+// Cadastro de funcionário - VERSÃO COMPLETA
 app.post('/api/funcionarios', async (req, res) => {
   try {
     const funcionarioData = req.body;
@@ -489,18 +506,13 @@ app.post('/api/funcionarios', async (req, res) => {
     
     // Validar líder responsável (se fornecido)
     let liderId = null;
-    let liderNome = null;
     
     if (funcionarioData.LIDER_RESPONSAVEL) {
       // Pode ser enviado como objeto {id, nome} ou apenas o ID
       if (typeof funcionarioData.LIDER_RESPONSAVEL === 'object') {
         liderId = funcionarioData.LIDER_RESPONSAVEL.id;
-        liderNome = funcionarioData.LIDER_RESPONSAVEL.nome;
       } else {
         liderId = funcionarioData.LIDER_RESPONSAVEL;
-        // Buscar nome do líder pelo ID
-        const liderEncontrado = lideresDisponiveis.find(l => l.id === liderId);
-        liderNome = liderEncontrado ? liderEncontrado.nome : null;
       }
       
       // Validar se o líder existe na lista de líderes disponíveis
@@ -528,7 +540,25 @@ app.post('/api/funcionarios', async (req, res) => {
       }
     }
 
-    // Preparar dados para inserção
+    // Processar seções do líder se for líder
+    let secoesLiderArray = null;
+    if (funcionarioData.IS_LIDER && funcionarioData.SECOES_LIDER) {
+      // Se SECOES_LIDER for uma string, converter para array
+      if (typeof funcionarioData.SECOES_LIDER === 'string') {
+        // Se for uma string separada por vírgulas
+        secoesLiderArray = funcionarioData.SECOES_LIDER
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
+      } else if (Array.isArray(funcionarioData.SECOES_LIDER)) {
+        // Se já for um array
+        secoesLiderArray = funcionarioData.SECOES_LIDER;
+      }
+      
+      console.log('Seções do líder processadas:', secoesLiderArray);
+    }
+
+    // Preparar dados para inserção - COM SEÇÕES DO LÍDER
     const dadosInserir = {
       nome: funcionarioData.NOME,
       cpf: funcionarioData.CPF.replace(/\D/g, ''),
@@ -545,8 +575,7 @@ app.post('/api/funcionarios', async (req, res) => {
       data_admissao: funcionarioData.ADMISSAO,
       salario: funcionarioData.SALARIO,
       secao: funcionarioData.SECAO,
-      lider_responsavel: liderId, // Armazena apenas o ID do líder
-      lider_nome: liderNome,      // Armazena também o nome para consultas rápidas
+      lider_responsavel: liderId,
       is_lider: funcionarioData.IS_LIDER || false,
       is_pai_mae: funcionarioData.IS_PAI_MAE || false,
       num_filhos: funcionarioData.NUM_FILHOS || 0,
@@ -559,6 +588,7 @@ app.post('/api/funcionarios', async (req, res) => {
       complemento: funcionarioData.END_COMPLEMENTO,
       tamanho_fardamento: funcionarioData.TAMANHO_FARDAMENTO,
       foto_url: fotoUrl,
+      secoes_lider: secoesLiderArray, // Salvar como array de seções
       data_criacao: new Date().toISOString()
     };
 
@@ -580,7 +610,7 @@ app.post('/api/funcionarios', async (req, res) => {
       console.error('Erro ao inserir funcionário:', error);
       return res.status(500).json({
         success: false,
-        error: 'Erro ao cadastrar funcionário no banco de dados'
+        error: 'Erro ao cadastrar funcionário no banco de dados: ' + error.message
       });
     }
 
@@ -595,16 +625,16 @@ app.post('/api/funcionarios', async (req, res) => {
     console.error('Erro no cadastro de funcionário:', error);
     return res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor'
+      error: 'Erro interno do servidor: ' + error.message
     });
   }
 });
 
 // ===================================================================
-// 🔄 ATUALIZAÇÃO DE FUNCIONÁRIOS
+// 🔄 ATUALIZAÇÃO DE FUNCIONÁRIOS COM SEÇÕES DO LÍDER
 // ===================================================================
 
-// Atualizar funcionário
+// Atualizar funcionário - VERSÃO COMPLETA
 app.put('/api/funcionarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -615,18 +645,13 @@ app.put('/api/funcionarios/:id', async (req, res) => {
     
     // Validar líder responsável (se fornecido)
     let liderId = null;
-    let liderNome = null;
     
     if (funcionarioData.LIDER_RESPONSAVEL) {
       // Pode ser enviado como objeto {id, nome} ou apenas o ID
       if (typeof funcionarioData.LIDER_RESPONSAVEL === 'object') {
         liderId = funcionarioData.LIDER_RESPONSAVEL.id;
-        liderNome = funcionarioData.LIDER_RESPONSAVEL.nome;
       } else {
         liderId = funcionarioData.LIDER_RESPONSAVEL;
-        // Buscar nome do líder pelo ID
-        const liderEncontrado = lideresDisponiveis.find(l => l.id === liderId);
-        liderNome = liderEncontrado ? liderEncontrado.nome : null;
       }
       
       // Validar se o líder existe na lista de líderes disponíveis
@@ -652,7 +677,25 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       }
     }
 
-    // Preparar dados para atualização
+    // Processar seções do líder se for líder
+    let secoesLiderArray = null;
+    if (funcionarioData.IS_LIDER && funcionarioData.SECOES_LIDER) {
+      // Se SECOES_LIDER for uma string, converter para array
+      if (typeof funcionarioData.SECOES_LIDER === 'string') {
+        // Se for uma string separada por vírgulas
+        secoesLiderArray = funcionarioData.SECOES_LIDER
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
+      } else if (Array.isArray(funcionarioData.SECOES_LIDER)) {
+        // Se já for um array
+        secoesLiderArray = funcionarioData.SECOES_LIDER;
+      }
+      
+      console.log('Seções do líder processadas:', secoesLiderArray);
+    }
+
+    // Preparar dados para atualização - COM SEÇÕES DO LÍDER
     const dadosAtualizar = {
       nome: funcionarioData.NOME,
       cpf: funcionarioData.CPF ? funcionarioData.CPF.replace(/\D/g, '') : null,
@@ -683,10 +726,17 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       data_atualizacao: new Date().toISOString()
     };
 
+    // Adicionar seções do líder se for líder
+    if (funcionarioData.IS_LIDER) {
+      dadosAtualizar.secoes_lider = secoesLiderArray;
+    } else {
+      // Se não for líder, limpar as seções
+      dadosAtualizar.secoes_lider = null;
+    }
+
     // Adicionar dados do líder se fornecido
     if (liderId !== null) {
       dadosAtualizar.lider_responsavel = liderId;
-      dadosAtualizar.lider_nome = liderNome;
     }
 
     if (fotoUrl) {
@@ -712,7 +762,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       console.error('Erro ao atualizar funcionário:', error);
       return res.status(500).json({
         success: false,
-        error: 'Erro ao atualizar funcionário'
+        error: 'Erro ao atualizar funcionário: ' + error.message
       });
     }
 
@@ -727,7 +777,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
     console.error('Erro na atualização de funcionário:', error);
     return res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor'
+      error: 'Erro interno do servidor: ' + error.message
     });
   }
 });
@@ -755,7 +805,7 @@ app.get('/api/funcionarios', async (req, res) => {
           // Buscar informações do líder
           const { data: liderData } = await supabase
             .from('funcionarios')
-            .select('nome, matricula')
+            .select('nome, matricula, secoes_lider')
             .eq('id', funcionario.lider_responsavel)
             .single();
           
@@ -802,7 +852,7 @@ app.get('/api/funcionarios/:id', async (req, res) => {
     if (funcionario.lider_responsavel) {
       const { data: liderData } = await supabase
         .from('funcionarios')
-        .select('id, nome, matricula, funcao, setor')
+        .select('id, nome, matricula, funcao, setor, secoes_lider')
         .eq('id', funcionario.lider_responsavel)
         .single();
       
@@ -852,16 +902,61 @@ app.get('/api/lideres-disponiveis', async (req, res) => {
   }
 });
 
+// Rota para listar líderes com suas seções
+app.get('/api/lideres-com-secoes', async (req, res) => {
+  try {
+    const lideres = await buscarLideresComSecoes();
+    
+    res.json({
+      success: true,
+      data: lideres
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar líderes com seções:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar líderes com seções'
+    });
+  }
+});
+
+// Rota para excluir funcionário
+app.delete('/api/funcionarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('funcionarios')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      message: 'Funcionário excluído com sucesso!'
+    });
+
+  } catch (error) {
+    console.error('Erro ao excluir funcionário:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao excluir funcionário'
+    });
+  }
+});
+
 // Inicializar servidor
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Supabase URL: ${SUPABASE_URL}`);
   console.log(`🔐 API CPF: Integrada com apicpf.com`);
   console.log(`🖼️  Storage de fotos: fotos-funcionarios`);
-  console.log(`👥 Sistema de líderes: Ativo`);
+  console.log(`👥 Sistema de líderes: Ativo com controle de seções`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
 });
 
 module.exports = app;
-
-
