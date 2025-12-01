@@ -1,3 +1,4 @@
+[file content begin]
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -428,6 +429,32 @@ app.get('/api/empresas/:id', async (req, res) => {
     });
   }
 });
+
+// ===================================================================
+// 👥 FUNÇÕES PARA LÍDERES
+// ===================================================================
+
+// Função para buscar líderes disponíveis (funcionários que são líderes)
+async function buscarLideresDisponiveis() {
+  try {
+    const { data, error } = await supabase
+      .from('funcionarios')
+      .select('id, nome, matricula')
+      .eq('is_lider', true)
+      .order('nome');
+
+    if (error) throw error;
+    return data || [];
+  } catch (error) {
+    console.error('Erro ao buscar líderes:', error);
+    return [];
+  }
+}
+
+// ===================================================================
+// 👨‍💼 CADASTRO DE FUNCIONÁRIOS COM LÍDER E FOTO
+// ===================================================================
+
 // Cadastro de funcionário
 app.post('/api/funcionarios', async (req, res) => {
   try {
@@ -458,25 +485,54 @@ app.post('/api/funcionarios', async (req, res) => {
       });
     }
 
+    // Buscar líderes disponíveis para validação
+    const lideresDisponiveis = await buscarLideresDisponiveis();
+    
+    // Validar líder responsável (se fornecido)
+    let liderId = null;
+    let liderNome = null;
+    
+    if (funcionarioData.LIDER_RESPONSAVEL) {
+      // Pode ser enviado como objeto {id, nome} ou apenas o ID
+      if (typeof funcionarioData.LIDER_RESPONSAVEL === 'object') {
+        liderId = funcionarioData.LIDER_RESPONSAVEL.id;
+        liderNome = funcionarioData.LIDER_RESPONSAVEL.nome;
+      } else {
+        liderId = funcionarioData.LIDER_RESPONSAVEL;
+        // Buscar nome do líder pelo ID
+        const liderEncontrado = lideresDisponiveis.find(l => l.id === liderId);
+        liderNome = liderEncontrado ? liderEncontrado.nome : null;
+      }
+      
+      // Validar se o líder existe na lista de líderes disponíveis
+      if (liderId && !lideresDisponiveis.some(l => l.id === liderId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Líder responsável não encontrado ou não é um líder válido'
+        });
+      }
+    }
+
     // Processar foto se existir
     let fotoUrl = null;
-    if (funcionarioData.FOTO) {
+    if (funcionarioData.FOTO && funcionarioData.FOTO.startsWith('data:image')) {
       try {
         fotoUrl = await uploadFotoParaStorage(
           funcionarioData.FOTO, 
-          funcionarioData.CPF, 
+          funcionarioData.CPF.replace(/\D/g, ''), 
           funcionarioData.MATRICULA
         );
         console.log('Foto uploadada com sucesso:', fotoUrl);
       } catch (uploadError) {
         console.error('Erro no upload da foto:', uploadError);
+        // Não falha o cadastro por causa do upload de foto
       }
     }
 
     // Preparar dados para inserção
     const dadosInserir = {
       nome: funcionarioData.NOME,
-      cpf: funcionarioData.CPF,
+      cpf: funcionarioData.CPF.replace(/\D/g, ''),
       data_nascimento: funcionarioData.NASC,
       naturalidade: funcionarioData.NATURALIDADE,
       sexo: funcionarioData.SEXO,
@@ -490,10 +546,11 @@ app.post('/api/funcionarios', async (req, res) => {
       data_admissao: funcionarioData.ADMISSAO,
       salario: funcionarioData.SALARIO,
       secao: funcionarioData.SECAO,
-      lider_responsavel: funcionarioData.LIDER_RESPONSAVEL,
-      is_lider: funcionarioData.IS_LIDER,
-      is_pai_mae: funcionarioData.IS_PAI_MAE,
-      num_filhos: funcionarioData.NUM_FILHOS,
+      lider_responsavel: liderId, // Armazena apenas o ID do líder
+      lider_nome: liderNome,      // Armazena também o nome para consultas rápidas
+      is_lider: funcionarioData.IS_LIDER || false,
+      is_pai_mae: funcionarioData.IS_PAI_MAE || false,
+      num_filhos: funcionarioData.NUM_FILHOS || 0,
       cep: funcionarioData.END_CEP,
       rua: funcionarioData.END_RUA,
       numero: funcionarioData.END_NUMERO,
@@ -544,11 +601,43 @@ app.post('/api/funcionarios', async (req, res) => {
   }
 });
 
+// ===================================================================
+// 🔄 ATUALIZAÇÃO DE FUNCIONÁRIOS
+// ===================================================================
+
 // Atualizar funcionário
 app.put('/api/funcionarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const funcionarioData = req.body;
+
+    // Buscar líderes disponíveis para validação
+    const lideresDisponiveis = await buscarLideresDisponiveis();
+    
+    // Validar líder responsável (se fornecido)
+    let liderId = null;
+    let liderNome = null;
+    
+    if (funcionarioData.LIDER_RESPONSAVEL) {
+      // Pode ser enviado como objeto {id, nome} ou apenas o ID
+      if (typeof funcionarioData.LIDER_RESPONSAVEL === 'object') {
+        liderId = funcionarioData.LIDER_RESPONSAVEL.id;
+        liderNome = funcionarioData.LIDER_RESPONSAVEL.nome;
+      } else {
+        liderId = funcionarioData.LIDER_RESPONSAVEL;
+        // Buscar nome do líder pelo ID
+        const liderEncontrado = lideresDisponiveis.find(l => l.id === liderId);
+        liderNome = liderEncontrado ? liderEncontrado.nome : null;
+      }
+      
+      // Validar se o líder existe na lista de líderes disponíveis
+      if (liderId && !lideresDisponiveis.some(l => l.id === liderId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Líder responsável não encontrado ou não é um líder válido'
+        });
+      }
+    }
 
     // Processar foto se existir
     let fotoUrl = null;
@@ -556,10 +645,9 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       try {
         fotoUrl = await uploadFotoParaStorage(
           funcionarioData.FOTO, 
-          funcionarioData.CPF, 
-          funcionarioData.MATRICULA
+          funcionarioData.CPF ? funcionarioData.CPF.replace(/\D/g, '') : 'sem-cpf', 
+          funcionarioData.MATRICULA || 'sem-matricula'
         );
-        funcionarioData.foto_url = fotoUrl;
       } catch (uploadError) {
         console.error('Erro no upload da foto:', uploadError);
       }
@@ -568,7 +656,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
     // Preparar dados para atualização
     const dadosAtualizar = {
       nome: funcionarioData.NOME,
-      cpf: funcionarioData.CPF,
+      cpf: funcionarioData.CPF ? funcionarioData.CPF.replace(/\D/g, '') : null,
       data_nascimento: funcionarioData.NASC,
       naturalidade: funcionarioData.NATURALIDADE,
       sexo: funcionarioData.SEXO,
@@ -582,10 +670,9 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       data_admissao: funcionarioData.ADMISSAO,
       salario: funcionarioData.SALARIO,
       secao: funcionarioData.SECAO,
-      lider_responsavel: funcionarioData.LIDER_RESPONSAVEL,
-      is_lider: funcionarioData.IS_LIDER,
-      is_pai_mae: funcionarioData.IS_PAI_MAE,
-      num_filhos: funcionarioData.NUM_FILHOS,
+      is_lider: funcionarioData.IS_LIDER || false,
+      is_pai_mae: funcionarioData.IS_PAI_MAE || false,
+      num_filhos: funcionarioData.NUM_FILHOS || 0,
       cep: funcionarioData.END_CEP,
       rua: funcionarioData.END_RUA,
       numero: funcionarioData.END_NUMERO,
@@ -596,6 +683,12 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       tamanho_fardamento: funcionarioData.TAMANHO_FARDAMENTO,
       data_atualizacao: new Date().toISOString()
     };
+
+    // Adicionar dados do líder se fornecido
+    if (liderId !== null) {
+      dadosAtualizar.lider_responsavel = liderId;
+      dadosAtualizar.lider_nome = liderNome;
+    }
 
     if (fotoUrl) {
       dadosAtualizar.foto_url = fotoUrl;
@@ -640,7 +733,11 @@ app.put('/api/funcionarios/:id', async (req, res) => {
   }
 });
 
-// Listar funcionários
+// ===================================================================
+// 📋 LISTAGEM E CONSULTA DE FUNCIONÁRIOS
+// ===================================================================
+
+// Listar funcionários com informações de líder
 app.get('/api/funcionarios', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -652,9 +749,29 @@ app.get('/api/funcionarios', async (req, res) => {
       throw error;
     }
 
+    // Enriquecer dados com informações do líder
+    const funcionariosComLider = await Promise.all(
+      (data || []).map(async (funcionario) => {
+        if (funcionario.lider_responsavel) {
+          // Buscar informações do líder
+          const { data: liderData } = await supabase
+            .from('funcionarios')
+            .select('nome, matricula')
+            .eq('id', funcionario.lider_responsavel)
+            .single();
+          
+          return {
+            ...funcionario,
+            lider_info: liderData || null
+          };
+        }
+        return funcionario;
+      })
+    );
+
     res.json({
       success: true,
-      data: data
+      data: funcionariosComLider
     });
 
   } catch (error) {
@@ -666,12 +783,12 @@ app.get('/api/funcionarios', async (req, res) => {
   }
 });
 
-// Buscar funcionário por ID
+// Buscar funcionário por ID com informações completas
 app.get('/api/funcionarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { data, error } = await supabase
+    const { data: funcionario, error } = await supabase
       .from('funcionarios')
       .select('*')
       .eq('id', id)
@@ -681,9 +798,31 @@ app.get('/api/funcionarios/:id', async (req, res) => {
       throw error;
     }
 
+    // Buscar informações do líder se existir
+    let liderInfo = null;
+    if (funcionario.lider_responsavel) {
+      const { data: liderData } = await supabase
+        .from('funcionarios')
+        .select('id, nome, matricula, funcao, setor')
+        .eq('id', funcionario.lider_responsavel)
+        .single();
+      
+      liderInfo = liderData;
+    }
+
+    // Buscar funcionários que têm este funcionário como líder
+    const { data: subordinados } = await supabase
+      .from('funcionarios')
+      .select('id, nome, matricula, funcao, setor')
+      .eq('lider_responsavel', id);
+
     res.json({
       success: true,
-      data: data
+      data: {
+        ...funcionario,
+        lider_info: liderInfo,
+        subordinados: subordinados || []
+      }
     });
 
   } catch (error) {
@@ -695,14 +834,34 @@ app.get('/api/funcionarios/:id', async (req, res) => {
   }
 });
 
+// Rota para listar líderes disponíveis
+app.get('/api/lideres-disponiveis', async (req, res) => {
+  try {
+    const lideres = await buscarLideresDisponiveis();
+    
+    res.json({
+      success: true,
+      data: lideres
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar líderes:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar líderes'
+    });
+  }
+});
+
 // Inicializar servidor
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando na porta ${PORT}`);
   console.log(`📊 Supabase URL: ${SUPABASE_URL}`);
   console.log(`🔐 API CPF: Integrada com apicpf.com`);
   console.log(`🖼️  Storage de fotos: fotos-funcionarios`);
+  console.log(`👥 Sistema de líderes: Ativo`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
 });
 
 module.exports = app;
-
+[file content end]
