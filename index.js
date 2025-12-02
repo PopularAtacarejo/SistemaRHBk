@@ -24,9 +24,15 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ===================================================================
+// 🖼️ FUNÇÕES DE STORAGE (FOTOS)
+// ===================================================================
+
 // Função para upload de foto para o Supabase Storage
 async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
   try {
+    console.log('📸 Iniciando upload de foto...');
+    
     const matches = fotoBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) {
       throw new Error('Formato de imagem base64 inválido');
@@ -40,6 +46,8 @@ async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
     const fileName = `foto-${cpf}-${matricula}-${Date.now()}.${extension}`;
     const filePath = `funcionarios/${fileName}`;
 
+    console.log(`📁 Uploading: ${fileName} (${buffer.length} bytes)`);
+
     const { data, error } = await supabase.storage
       .from('fotos-funcionarios')
       .upload(filePath, buffer, {
@@ -48,20 +56,28 @@ async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
       });
 
     if (error) {
+      console.error('❌ Erro no upload da foto:', error);
       throw error;
     }
+
+    console.log('✅ Upload concluído, obtendo URL pública...');
 
     const { data: { publicUrl } } = supabase.storage
       .from('fotos-funcionarios')
       .getPublicUrl(filePath);
 
+    console.log(`🔗 URL da foto: ${publicUrl}`);
     return publicUrl;
 
   } catch (error) {
-    console.error('Erro no upload da foto:', error);
+    console.error('❌ Erro no upload da foto:', error);
     throw new Error(`Falha no upload da foto: ${error.message}`);
   }
 }
+
+// ===================================================================
+// 🔍 CONSULTA CPF
+// ===================================================================
 
 // Função para consulta real na API de CPF
 async function consultarAPIExternaCPF(cpf) {
@@ -74,7 +90,7 @@ async function consultarAPIExternaCPF(cpf) {
       "X-API-KEY": "7616f38484798083668eea3d51d986edeec5c20a93c24a7aea49cc3f0697c929"
     };
 
-    console.log(`Consultando CPF na API: ${cpfClean}`);
+    console.log(`🔍 Consultando CPF na API: ${cpfClean}`);
     
     const response = await fetch(url, { 
       headers: headers,
@@ -86,7 +102,7 @@ async function consultarAPIExternaCPF(cpf) {
     }
 
     const result = await response.json();
-    console.log('Resposta completa da API CPF:', result);
+    console.log('📨 Resposta completa da API CPF:', result);
 
     // Verifica se a API retornou dados válidos
     if (result && result.code === 200 && result.data && result.data.nome) {
@@ -111,17 +127,17 @@ async function consultarAPIExternaCPF(cpf) {
       };
     } else {
       // Se a API não retornou nome, considera que não encontrou
-      console.log('CPF não encontrado na API');
+      console.log('⚠️ CPF não encontrado na API');
       return null;
     }
 
   } catch (error) {
-    console.error('Erro na API externa de CPF:', error);
+    console.error('❌ Erro na API externa de CPF:', error);
     return null;
   }
 }
 
-// Consulta de CPF
+// Rota para consultar CPF
 app.post('/api/consultar-cpf', async (req, res) => {
   try {
     const { cpf } = req.body;
@@ -133,6 +149,8 @@ app.post('/api/consultar-cpf', async (req, res) => {
       });
     }
 
+    console.log(`🔍 Consulta CPF solicitada: ${cpf}`);
+
     // Verificar se o CPF já existe no banco de dados (para evitar duplicação)
     const { data: existingFuncionario, error: queryError } = await supabase
       .from('funcionarios')
@@ -141,7 +159,7 @@ app.post('/api/consultar-cpf', async (req, res) => {
       .single();
 
     if (queryError && queryError.code !== 'PGRST116') {
-      console.error('Erro ao consultar CPF no banco:', queryError);
+      console.error('❌ Erro ao consultar CPF no banco:', queryError);
       return res.status(500).json({
         success: false,
         error: 'Erro interno ao consultar CPF'
@@ -149,6 +167,7 @@ app.post('/api/consultar-cpf', async (req, res) => {
     }
 
     if (existingFuncionario) {
+      console.log('❌ CPF já cadastrado no sistema:', cpf);
       return res.json({
         success: false,
         error: 'CPF já cadastrado no sistema',
@@ -161,11 +180,13 @@ app.post('/api/consultar-cpf', async (req, res) => {
     const dadosCPF = await consultarAPIExternaCPF(cpf);
 
     if (dadosCPF) {
+      console.log('✅ CPF encontrado na API externa');
       return res.json({
         success: true,
         data: dadosCPF
       });
     } else {
+      console.log('⚠️ CPF não encontrado na API externa');
       return res.json({
         success: false,
         error: 'CPF não encontrado na base de dados oficial',
@@ -174,7 +195,7 @@ app.post('/api/consultar-cpf', async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Erro na consulta de CPF:', error);
+    console.error('❌ Erro na consulta de CPF:', error);
     return res.status(500).json({
       success: false,
       error: 'Erro interno do servidor'
@@ -197,7 +218,7 @@ async function consultarAPIExternaCNPJ(cnpj) {
     
     const url = `https://open.cnpja.com/office/${cnpjLimpo}`;
     
-    console.log(`Consultando CNPJ na API: ${cnpjLimpo}`);
+    console.log(`🏢 Consultando CNPJ na API: ${cnpjLimpo}`);
     
     const response = await fetch(url, { timeout: 10000 });
     
@@ -206,12 +227,12 @@ async function consultarAPIExternaCNPJ(cnpj) {
     }
 
     const result = await response.json();
-    console.log('Resposta completa da API CNPJ:', result);
+    console.log('📨 Resposta completa da API CNPJ:', result);
 
     return result;
 
   } catch (error) {
-    console.error('Erro na API externa de CNPJ:', error);
+    console.error('❌ Erro na API externa de CNPJ:', error);
     throw new Error(`Erro na consulta CNPJ: ${error.message}`);
   }
 }
@@ -228,6 +249,8 @@ app.post('/api/consultar-cnpj', async (req, res) => {
       });
     }
 
+    console.log(`🏢 Consulta CNPJ solicitada: ${cnpj}`);
+
     // Verificar se o CNPJ já existe no banco de dados
     const { data: existingEmpresa, error: queryError } = await supabase
       .from('empresas')
@@ -236,7 +259,7 @@ app.post('/api/consultar-cnpj', async (req, res) => {
       .single();
 
     if (queryError && queryError.code !== 'PGRST116') {
-      console.error('Erro ao consultar CNPJ no banco:', queryError);
+      console.error('❌ Erro ao consultar CNPJ no banco:', queryError);
       return res.status(500).json({
         success: false,
         error: 'Erro interno ao consultar CNPJ'
@@ -244,6 +267,7 @@ app.post('/api/consultar-cnpj', async (req, res) => {
     }
 
     if (existingEmpresa) {
+      console.log('❌ CNPJ já cadastrado no sistema:', cnpj);
       return res.json({
         success: false,
         error: 'CNPJ já cadastrado no sistema',
@@ -256,11 +280,13 @@ app.post('/api/consultar-cnpj', async (req, res) => {
     const dadosCNPJ = await consultarAPIExternaCNPJ(cnpj);
 
     if (dadosCNPJ) {
+      console.log('✅ CNPJ encontrado na API externa');
       return res.json({
         success: true,
         data: dadosCNPJ
       });
     } else {
+      console.log('⚠️ CNPJ não encontrado na API externa');
       return res.json({
         success: false,
         error: 'CNPJ não encontrado na base de dados oficial',
@@ -269,7 +295,7 @@ app.post('/api/consultar-cnpj', async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Erro na consulta de CNPJ:', error);
+    console.error('❌ Erro na consulta de CNPJ:', error);
     return res.status(500).json({
       success: false,
       error: 'Erro interno do servidor'
@@ -285,6 +311,11 @@ app.post('/api/consultar-cnpj', async (req, res) => {
 app.post('/api/empresas', async (req, res) => {
   try {
     const empresaData = req.body;
+
+    console.log('🏢 Dados recebidos para cadastro de empresa:', {
+      cnpj: empresaData.CNPJ,
+      nome_fantasia: empresaData.NOME_FANTASIA
+    });
 
     // Validar campos obrigatórios
     const camposObrigatorios = ['CNPJ', 'NOME_FANTASIA', 'RAZAO_SOCIAL'];
@@ -305,6 +336,7 @@ app.post('/api/empresas', async (req, res) => {
       .single();
 
     if (existingEmpresa) {
+      console.log('❌ CNPJ já cadastrado no sistema:', empresaData.CNPJ);
       return res.status(400).json({
         success: false,
         error: 'CNPJ já cadastrado no sistema'
@@ -348,12 +380,14 @@ app.post('/api/empresas', async (req, res) => {
       .select();
 
     if (error) {
-      console.error('Erro ao inserir empresa:', error);
+      console.error('❌ Erro ao inserir empresa:', error);
       return res.status(500).json({
         success: false,
         error: 'Erro ao cadastrar empresa no banco de dados'
       });
     }
+
+    console.log('✅ Empresa cadastrada com sucesso:', data[0].id);
 
     return res.json({
       success: true,
@@ -362,7 +396,7 @@ app.post('/api/empresas', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro no cadastro de empresa:', error);
+    console.error('❌ Erro no cadastro de empresa:', error);
     return res.status(500).json({
       success: false,
       error: 'Erro interno do servidor'
@@ -392,7 +426,7 @@ app.get('/api/empresas', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro ao listar empresas:', error);
+    console.error('❌ Erro ao listar empresas:', error);
     res.status(500).json({
       success: false,
       error: 'Erro ao buscar empresas'
@@ -421,7 +455,7 @@ app.get('/api/empresas/:id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro ao buscar empresa:', error);
+    console.error('❌ Erro ao buscar empresa:', error);
     res.status(500).json({
       success: false,
       error: 'Empresa não encontrada'
@@ -433,48 +467,65 @@ app.get('/api/empresas/:id', async (req, res) => {
 // 👥 FUNÇÕES PARA LÍDERES
 // ===================================================================
 
-// Função para buscar líderes disponíveis (funcionários que são líderes)
+// Função para buscar líderes disponíveis
 async function buscarLideresDisponiveis() {
   try {
     const { data, error } = await supabase
       .from('funcionarios')
-      .select('id, nome, matricula, secoes_lider')
+      .select('id, nome, matricula')
       .eq('is_lider', true)
       .order('nome');
 
     if (error) throw error;
     return data || [];
   } catch (error) {
-    console.error('Erro ao buscar líderes:', error);
+    console.error('❌ Erro ao buscar líderes:', error);
     return [];
   }
 }
 
-// Função para buscar líderes com suas seções
-async function buscarLideresComSecoes() {
+// Função para validar se um ID é um líder válido
+async function validarLiderPorId(liderId) {
   try {
+    if (!liderId || liderId.trim() === '') {
+      return null;
+    }
+
     const { data, error } = await supabase
       .from('funcionarios')
-      .select('id, nome, matricula, secoes_lider, empresa, setor, funcao')
+      .select('id, nome, matricula')
+      .eq('id', liderId)
       .eq('is_lider', true)
-      .order('nome');
+      .single();
 
-    if (error) throw error;
-    return data || [];
+    if (error) {
+      console.warn('⚠️ Líder não encontrado por ID:', liderId, error);
+      return null;
+    }
+
+    console.log('✅ Líder validado:', data);
+    return data;
   } catch (error) {
-    console.error('Erro ao buscar líderes com seções:', error);
-    return [];
+    console.error('❌ Erro ao validar líder por ID:', error);
+    return null;
   }
 }
 
 // ===================================================================
-// 👨‍💼 CADASTRO DE FUNCIONÁRIOS COM LÍDER, FOTO E SEÇÕES DO LÍDER
+// 👨‍💼 CADASTRO DE FUNCIONÁRIOS (COM LÍDER POR ID E TAMANHO CALÇADO)
 // ===================================================================
 
-// Cadastro de funcionário - VERSÃO COMPLETA
+// Rota para cadastrar funcionário
 app.post('/api/funcionarios', async (req, res) => {
   try {
     const funcionarioData = req.body;
+    console.log('📥 Dados recebidos para cadastro de funcionário:', {
+      nome: funcionarioData.NOME,
+      cpf: funcionarioData.CPF,
+      lider_responsavel: funcionarioData.LIDER_RESPONSAVEL,
+      tamanho_calcado: funcionarioData.TAMANHO_CALCADO,
+      temFoto: !!funcionarioData.FOTO
+    });
 
     // Validar campos obrigatórios
     const camposObrigatorios = ['NOME', 'CPF', 'EMPRESA', 'SETOR', 'FUNCAO', 'MATRICULA', 'ADMISSAO'];
@@ -491,36 +542,34 @@ app.post('/api/funcionarios', async (req, res) => {
     const { data: existingFuncionario, error: checkError } = await supabase
       .from('funcionarios')
       .select('cpf')
-      .eq('cpf', funcionarioData.CPF)
+      .eq('cpf', funcionarioData.CPF.replace(/\D/g, ''))
       .single();
 
     if (existingFuncionario) {
+      console.log('❌ CPF já cadastrado no sistema:', funcionarioData.CPF);
       return res.status(400).json({
         success: false,
         error: 'CPF já cadastrado no sistema'
       });
     }
 
-    // Buscar líderes disponíveis para validação
-    const lideresDisponiveis = await buscarLideresDisponiveis();
-    
-    // Validar líder responsável (se fornecido)
+    // VALIDAÇÃO DO LÍDER (por ID)
     let liderId = null;
+    let liderNome = null;
     
-    if (funcionarioData.LIDER_RESPONSAVEL) {
-      // Pode ser enviado como objeto {id, nome} ou apenas o ID
-      if (typeof funcionarioData.LIDER_RESPONSAVEL === 'object') {
-        liderId = funcionarioData.LIDER_RESPONSAVEL.id;
-      } else {
-        liderId = funcionarioData.LIDER_RESPONSAVEL;
-      }
+    if (funcionarioData.LIDER_RESPONSAVEL && funcionarioData.LIDER_RESPONSAVEL.trim() !== '') {
+      const liderValido = await validarLiderPorId(funcionarioData.LIDER_RESPONSAVEL);
       
-      // Validar se o líder existe na lista de líderes disponíveis
-      if (liderId && !lideresDisponiveis.some(l => l.id === liderId)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Líder responsável não encontrado ou não é um líder válido'
-        });
+      if (liderValido) {
+        liderId = funcionarioData.LIDER_RESPONSAVEL;
+        liderNome = liderValido.nome;
+        console.log('✅ Líder validado:', liderValido);
+      } else {
+        // Se o líder não for válido, apenas registra o aviso mas não falha o cadastro
+        console.warn('⚠️ Líder não encontrado ou não é válido:', funcionarioData.LIDER_RESPONSAVEL);
+        // Continue sem líder, não falhe o cadastro
+        liderId = null;
+        liderNome = null;
       }
     }
 
@@ -533,9 +582,9 @@ app.post('/api/funcionarios', async (req, res) => {
           funcionarioData.CPF.replace(/\D/g, ''), 
           funcionarioData.MATRICULA
         );
-        console.log('Foto uploadada com sucesso:', fotoUrl);
+        console.log('✅ Foto uploadada com sucesso:', fotoUrl);
       } catch (uploadError) {
-        console.error('Erro no upload da foto:', uploadError);
+        console.error('❌ Erro no upload da foto:', uploadError);
         // Não falha o cadastro por causa do upload de foto
       }
     }
@@ -543,22 +592,18 @@ app.post('/api/funcionarios', async (req, res) => {
     // Processar seções do líder se for líder
     let secoesLiderArray = null;
     if (funcionarioData.IS_LIDER && funcionarioData.SECOES_LIDER) {
-      // Se SECOES_LIDER for uma string, converter para array
       if (typeof funcionarioData.SECOES_LIDER === 'string') {
-        // Se for uma string separada por vírgulas
         secoesLiderArray = funcionarioData.SECOES_LIDER
           .split(',')
           .map(s => s.trim())
           .filter(s => s.length > 0);
       } else if (Array.isArray(funcionarioData.SECOES_LIDER)) {
-        // Se já for um array
         secoesLiderArray = funcionarioData.SECOES_LIDER;
       }
-      
-      console.log('Seções do líder processadas:', secoesLiderArray);
+      console.log('📋 Seções do líder processadas:', secoesLiderArray);
     }
 
-    // Preparar dados para inserção - COM SEÇÕES DO LÍDER
+    // Preparar dados para inserção
     const dadosInserir = {
       nome: funcionarioData.NOME,
       cpf: funcionarioData.CPF.replace(/\D/g, ''),
@@ -574,8 +619,7 @@ app.post('/api/funcionarios', async (req, res) => {
       matricula: funcionarioData.MATRICULA,
       data_admissao: funcionarioData.ADMISSAO,
       salario: funcionarioData.SALARIO,
-      secao: funcionarioData.SECAO,
-      lider_responsavel: liderId,
+      lider_responsavel: liderId, // SALVAR APENAS O ID DO LÍDER
       is_lider: funcionarioData.IS_LIDER || false,
       is_pai_mae: funcionarioData.IS_PAI_MAE || false,
       num_filhos: funcionarioData.NUM_FILHOS || 0,
@@ -587,8 +631,9 @@ app.post('/api/funcionarios', async (req, res) => {
       estado: funcionarioData.END_ESTADO,
       complemento: funcionarioData.END_COMPLEMENTO,
       tamanho_fardamento: funcionarioData.TAMANHO_FARDAMENTO,
+      tamanho_calcado: funcionarioData.TAMANHO_CALCADO, // NOVO CAMPO
       foto_url: fotoUrl,
-      secoes_lider: secoesLiderArray, // Salvar como array de seções
+      secoes_lider: secoesLiderArray,
       data_criacao: new Date().toISOString()
     };
 
@@ -600,6 +645,14 @@ app.post('/api/funcionarios', async (req, res) => {
       }
     }
 
+    console.log('📤 Dados para inserção no Supabase:', {
+      nome: dadosInserir.nome,
+      lider_responsavel: dadosInserir.lider_responsavel,
+      empresa: dadosInserir.empresa,
+      tamanho_fardamento: dadosInserir.tamanho_fardamento,
+      tamanho_calcado: dadosInserir.tamanho_calcado
+    });
+
     // Inserir no Supabase
     const { data, error } = await supabase
       .from('funcionarios')
@@ -607,12 +660,14 @@ app.post('/api/funcionarios', async (req, res) => {
       .select();
 
     if (error) {
-      console.error('Erro ao inserir funcionário:', error);
+      console.error('❌ Erro ao inserir funcionário:', error);
       return res.status(500).json({
         success: false,
         error: 'Erro ao cadastrar funcionário no banco de dados: ' + error.message
       });
     }
+
+    console.log('✅ Funcionário cadastrado com sucesso:', data[0].id);
 
     return res.json({
       success: true,
@@ -622,7 +677,7 @@ app.post('/api/funcionarios', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro no cadastro de funcionário:', error);
+    console.error('❌ Erro no cadastro de funcionário:', error);
     return res.status(500).json({
       success: false,
       error: 'Erro interno do servidor: ' + error.message
@@ -631,35 +686,29 @@ app.post('/api/funcionarios', async (req, res) => {
 });
 
 // ===================================================================
-// 🔄 ATUALIZAÇÃO DE FUNCIONÁRIOS COM SEÇÕES DO LÍDER
+// 🔄 ATUALIZAÇÃO DE FUNCIONÁRIOS (COM TAMANHO CALÇADO)
 // ===================================================================
 
-// Atualizar funcionário - VERSÃO COMPLETA
+// Rota para atualizar funcionário
 app.put('/api/funcionarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const funcionarioData = req.body;
 
-    // Buscar líderes disponíveis para validação
-    const lideresDisponiveis = await buscarLideresDisponiveis();
-    
-    // Validar líder responsável (se fornecido)
+    console.log('📥 Atualizando funcionário ID:', id);
+
+    // VALIDAÇÃO DO LÍDER (por ID)
     let liderId = null;
     
-    if (funcionarioData.LIDER_RESPONSAVEL) {
-      // Pode ser enviado como objeto {id, nome} ou apenas o ID
-      if (typeof funcionarioData.LIDER_RESPONSAVEL === 'object') {
-        liderId = funcionarioData.LIDER_RESPONSAVEL.id;
-      } else {
-        liderId = funcionarioData.LIDER_RESPONSAVEL;
-      }
+    if (funcionarioData.LIDER_RESPONSAVEL && funcionarioData.LIDER_RESPONSAVEL.trim() !== '') {
+      const liderValido = await validarLiderPorId(funcionarioData.LIDER_RESPONSAVEL);
       
-      // Validar se o líder existe na lista de líderes disponíveis
-      if (liderId && !lideresDisponiveis.some(l => l.id === liderId)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Líder responsável não encontrado ou não é um líder válido'
-        });
+      if (liderValido) {
+        liderId = funcionarioData.LIDER_RESPONSAVEL;
+        console.log('✅ Líder validado para atualização:', liderValido);
+      } else {
+        console.warn('⚠️ Líder não encontrado para atualização:', funcionarioData.LIDER_RESPONSAVEL);
+        liderId = null;
       }
     }
 
@@ -672,30 +721,27 @@ app.put('/api/funcionarios/:id', async (req, res) => {
           funcionarioData.CPF ? funcionarioData.CPF.replace(/\D/g, '') : 'sem-cpf', 
           funcionarioData.MATRICULA || 'sem-matricula'
         );
+        console.log('✅ Foto atualizada:', fotoUrl);
       } catch (uploadError) {
-        console.error('Erro no upload da foto:', uploadError);
+        console.error('❌ Erro no upload da foto:', uploadError);
       }
     }
 
     // Processar seções do líder se for líder
     let secoesLiderArray = null;
     if (funcionarioData.IS_LIDER && funcionarioData.SECOES_LIDER) {
-      // Se SECOES_LIDER for uma string, converter para array
       if (typeof funcionarioData.SECOES_LIDER === 'string') {
-        // Se for uma string separada por vírgulas
         secoesLiderArray = funcionarioData.SECOES_LIDER
           .split(',')
           .map(s => s.trim())
           .filter(s => s.length > 0);
       } else if (Array.isArray(funcionarioData.SECOES_LIDER)) {
-        // Se já for um array
         secoesLiderArray = funcionarioData.SECOES_LIDER;
       }
-      
-      console.log('Seções do líder processadas:', secoesLiderArray);
+      console.log('📋 Seções do líder processadas:', secoesLiderArray);
     }
 
-    // Preparar dados para atualização - COM SEÇÕES DO LÍDER
+    // Preparar dados para atualização
     const dadosAtualizar = {
       nome: funcionarioData.NOME,
       cpf: funcionarioData.CPF ? funcionarioData.CPF.replace(/\D/g, '') : null,
@@ -711,7 +757,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       matricula: funcionarioData.MATRICULA,
       data_admissao: funcionarioData.ADMISSAO,
       salario: funcionarioData.SALARIO,
-      secao: funcionarioData.SECAO,
+      lider_responsavel: liderId, // SALVAR APENAS O ID DO LÍDER
       is_lider: funcionarioData.IS_LIDER || false,
       is_pai_mae: funcionarioData.IS_PAI_MAE || false,
       num_filhos: funcionarioData.NUM_FILHOS || 0,
@@ -723,6 +769,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       estado: funcionarioData.END_ESTADO,
       complemento: funcionarioData.END_COMPLEMENTO,
       tamanho_fardamento: funcionarioData.TAMANHO_FARDAMENTO,
+      tamanho_calcado: funcionarioData.TAMANHO_CALCADO, // NOVO CAMPO
       data_atualizacao: new Date().toISOString()
     };
 
@@ -730,13 +777,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
     if (funcionarioData.IS_LIDER) {
       dadosAtualizar.secoes_lider = secoesLiderArray;
     } else {
-      // Se não for líder, limpar as seções
       dadosAtualizar.secoes_lider = null;
-    }
-
-    // Adicionar dados do líder se fornecido
-    if (liderId !== null) {
-      dadosAtualizar.lider_responsavel = liderId;
     }
 
     if (fotoUrl) {
@@ -759,12 +800,14 @@ app.put('/api/funcionarios/:id', async (req, res) => {
       .select();
 
     if (error) {
-      console.error('Erro ao atualizar funcionário:', error);
+      console.error('❌ Erro ao atualizar funcionário:', error);
       return res.status(500).json({
         success: false,
         error: 'Erro ao atualizar funcionário: ' + error.message
       });
     }
+
+    console.log('✅ Funcionário atualizado com sucesso:', id);
 
     return res.json({
       success: true,
@@ -774,7 +817,7 @@ app.put('/api/funcionarios/:id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro na atualização de funcionário:', error);
+    console.error('❌ Erro na atualização de funcionário:', error);
     return res.status(500).json({
       success: false,
       error: 'Erro interno do servidor: ' + error.message
@@ -824,7 +867,7 @@ app.get('/api/funcionarios', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro ao listar funcionários:', error);
+    console.error('❌ Erro ao listar funcionários:', error);
     res.status(500).json({
       success: false,
       error: 'Erro ao buscar funcionários'
@@ -875,7 +918,7 @@ app.get('/api/funcionarios/:id', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro ao buscar funcionário:', error);
+    console.error('❌ Erro ao buscar funcionário:', error);
     res.status(500).json({
       success: false,
       error: 'Funcionário não encontrado'
@@ -883,10 +926,16 @@ app.get('/api/funcionarios/:id', async (req, res) => {
   }
 });
 
+// ===================================================================
+// 📊 ROTAS PARA LÍDERES
+// ===================================================================
+
 // Rota para listar líderes disponíveis
 app.get('/api/lideres-disponiveis', async (req, res) => {
   try {
     const lideres = await buscarLideresDisponiveis();
+    
+    console.log(`👥 Líderes disponíveis: ${lideres.length}`);
     
     res.json({
       success: true,
@@ -894,7 +943,7 @@ app.get('/api/lideres-disponiveis', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Erro ao listar líderes:', error);
+    console.error('❌ Erro ao listar líderes:', error);
     res.status(500).json({
       success: false,
       error: 'Erro ao buscar líderes'
@@ -905,15 +954,23 @@ app.get('/api/lideres-disponiveis', async (req, res) => {
 // Rota para listar líderes com suas seções
 app.get('/api/lideres-com-secoes', async (req, res) => {
   try {
-    const lideres = await buscarLideresComSecoes();
+    const { data: lideres, error } = await supabase
+      .from('funcionarios')
+      .select('id, nome, matricula, secoes_lider, empresa, setor, funcao')
+      .eq('is_lider', true)
+      .order('nome');
+
+    if (error) throw error;
+
+    console.log(`👑 Líderes com seções: ${lideres?.length || 0}`);
     
     res.json({
       success: true,
-      data: lideres
+      data: lideres || []
     });
 
   } catch (error) {
-    console.error('Erro ao listar líderes com seções:', error);
+    console.error('❌ Erro ao listar líderes com seções:', error);
     res.status(500).json({
       success: false,
       error: 'Erro ao buscar líderes com seções'
@@ -921,10 +978,16 @@ app.get('/api/lideres-com-secoes', async (req, res) => {
   }
 });
 
+// ===================================================================
+// 🗑️ EXCLUSÃO DE FUNCIONÁRIOS
+// ===================================================================
+
 // Rota para excluir funcionário
 app.delete('/api/funcionarios/:id', async (req, res) => {
   try {
     const { id } = req.params;
+
+    console.log(`🗑️ Excluindo funcionário ID: ${id}`);
 
     const { error } = await supabase
       .from('funcionarios')
@@ -935,13 +998,15 @@ app.delete('/api/funcionarios/:id', async (req, res) => {
       throw error;
     }
 
+    console.log('✅ Funcionário excluído com sucesso');
+
     res.json({
       success: true,
       message: 'Funcionário excluído com sucesso!'
     });
 
   } catch (error) {
-    console.error('Erro ao excluir funcionário:', error);
+    console.error('❌ Erro ao excluir funcionário:', error);
     res.status(500).json({
       success: false,
       error: 'Erro ao excluir funcionário'
@@ -949,14 +1014,87 @@ app.delete('/api/funcionarios/:id', async (req, res) => {
   }
 });
 
+// ===================================================================
+// 📁 ROTAS PARA SETORES
+// ===================================================================
+
+// Rota para listar setores
+app.get('/api/setores', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('setores')
+      .select('*')
+      .order('nome');
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao listar setores:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar setores'
+    });
+  }
+});
+
+// ===================================================================
+// 🛠️ ROTAS PARA FUNÇÕES
+// ===================================================================
+
+// Rota para listar funções
+app.get('/api/funcoes', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('funcoes')
+      .select('*')
+      .order('nome');
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao listar funções:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar funções'
+    });
+  }
+});
+
+// ===================================================================
+// 🚀 INICIALIZAÇÃO DO SERVIDOR
+// ===================================================================
+
 // Inicializar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+  console.log('='.repeat(60));
+  console.log(`🚀 Servidor do Sistema RH rodando na porta ${PORT}`);
+  console.log('='.repeat(60));
   console.log(`📊 Supabase URL: ${SUPABASE_URL}`);
   console.log(`🔐 API CPF: Integrada com apicpf.com`);
+  console.log(`🏢 API CNPJ: Integrada com open.cnpja.com`);
   console.log(`🖼️  Storage de fotos: fotos-funcionarios`);
-  console.log(`👥 Sistema de líderes: Ativo com controle de seções`);
+  console.log(`👥 Sistema de líderes: Ativo com validação por ID`);
+  console.log(`👕 Tamanho de fardamento: Suportado`);
+  console.log(`👟 Tamanho de calçado: Adicionado (33-47)`);
+  console.log(`📁 Upload de fotos: Ativo (máx 2MB)`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
+  console.log('='.repeat(60));
+  console.log('✅ Backend pronto para receber requisições!');
+  console.log('='.repeat(60));
 });
 
 module.exports = app;
