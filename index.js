@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,6 +16,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Health Check
 app.get('/api/health', (req, res) => {
@@ -73,6 +76,337 @@ async function uploadFotoParaStorage(fotoBase64, cpf, matricula) {
     throw new Error(`Falha no upload da foto: ${error.message}`);
   }
 }
+
+// ===================================================================
+// 📁 FUNÇÕES DE STORAGE PARA ADVERTÊNCIAS
+// ===================================================================
+
+async function uploadArquivoParaStorage(file, prefixo, funcionarioId) {
+  try {
+    console.log(`📁 Iniciando upload de ${prefixo} para funcionário ${funcionarioId}...`);
+    
+    const fileName = `${prefixo}-${funcionarioId}-${Date.now()}.${file.originalname.split('.').pop()}`;
+    const filePath = `advertencias/${funcionarioId}/${fileName}`;
+
+    const { data, error } = await supabase.storage
+      .from('arquivos-advertencias')
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false
+      });
+
+    if (error) {
+      console.error(`❌ Erro no upload do arquivo ${prefixo}:`, error);
+      throw error;
+    }
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('arquivos-advertencias')
+      .getPublicUrl(filePath);
+
+    console.log(`✅ Upload concluído: ${publicUrl}`);
+    return publicUrl;
+
+  } catch (error) {
+    console.error(`❌ Erro no upload do arquivo:`, error);
+    throw new Error(`Falha no upload do arquivo: ${error.message}`);
+  }
+}
+
+// ===================================================================
+// ⚠️ ROTAS PARA ADVERTÊNCIAS
+// ===================================================================
+
+// Criar advertência (com upload de arquivos)
+app.post('/api/advertencias', upload.any(), async (req, res) => {
+  try {
+    console.log('📥 Recebendo dados para nova advertência...');
+    
+    // Extrair dados do FormData
+    const dadosAdvertencia = JSON.parse(req.body.dados || '{}');
+    const files = req.files || [];
+    
+    console.log('📋 Dados da advertência:', {
+      funcionario_id: dadosAdvertencia.funcionario_id,
+      tipo: dadosAdvertencia.tipo,
+      aplicado_por: dadosAdvertencia.aplicado_por,
+      arquivosRecebidos: files.length
+    });
+
+    // Validar campos obrigatórios
+    const camposObrigatorios = ['funcionario_id', 'tipo', 'motivo', 'aplicado_por', 'data_advertencia'];
+    const camposFaltantes = camposObrigatorios.filter(campo => !dadosAdvertencia[campo]);
+    
+    if (camposFaltantes.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Campos obrigatórios faltando: ${camposFaltantes.join(', ')}`
+      });
+    }
+
+    // Verificar se funcionário existe
+    const { data: funcionario, error: funcError } = await supabase
+      .from('funcionarios')
+      .select('id, nome, cpf, matricula, funcao, setor, empresa, data_admissao, foto_url')
+      .eq('id', dadosAdvertencia.funcionario_id)
+      .single();
+
+    if (funcError || !funcionario) {
+      console.error('❌ Funcionário não encontrado:', dadosAdvertencia.funcionario_id);
+      return res.status(404).json({
+        success: false,
+        error: 'Funcionário não encontrado'
+      });
+    }
+
+    // Processar arquivos
+    const evidenciasUrls = [];
+    let assinaturaUrl = null;
+
+    for (const file of files) {
+      try {
+        if (file.fieldname.includes('evidencias')) {
+          const url = await uploadArquivoParaStorage(file, 'evidencia', dadosAdvertencia.funcionario_id);
+          evidenciasUrls.push(url);
+          console.log(`✅ Evidência salva: ${url}`);
+        } else if (file.fieldname === 'assinatura') {
+          assinaturaUrl = await uploadArquivoParaStorage(file, 'assinatura', dadosAdvertencia.funcionario_id);
+          console.log(`✅ Assinatura salva: ${assinaturaUrl}`);
+        }
+      } catch (uploadError) {
+        console.error(`❌ Erro ao processar arquivo ${file.originalname}:`, uploadError);
+      }
+    }
+
+    // Preparar dados para inserção
+    const dadosInserir = {
+      funcionario_id: dadosAdvertencia.funcionario_id,
+      funcionario_nome: funcionario.nome,
+      funcionario_cpf: funcionario.cpf,
+      funcionario_matricula: funcionario.matricula,
+      funcionario_funcao: funcionario.funcao,
+      funcionario_setor: funcionario.setor,
+      funcionario_empresa: funcionario.empresa,
+      funcionario_foto: funcionario.foto_url,
+      tipo: dadosAdvertencia.tipo,
+      motivo: dadosAdvertencia.motivo,
+      aplicado_por: dadosAdvertencia.aplicado_por,
+      data_advertencia: dadosAdvertencia.data_advertencia,
+      validade_meses: dadosAdvertencia.validade_meses || 6,
+      observacoes: dadosAdvertencia.observacoes || '',
+      status: 'ATIVA',
+      evidencias_url: evidenciasUrls.length > 0 ? evidenciasUrls : null,
+      assinatura_url: assinaturaUrl,
+      data_criacao: new Date().toISOString()
+    };
+
+    // Inserir no banco
+    const { data, error } = await supabase
+      .from('advertencias')
+      .insert([dadosInserir])
+      .select();
+
+    if (error) {
+      console.error('❌ Erro ao inserir advertência:', error);
+      
+      // Se a tabela não existir, retornar erro específico
+      if (error.code === '42P01') {
+        return res.status(500).json({
+          success: false,
+          error: 'Tabela de advertências não encontrada. Crie a tabela no Supabase.'
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Erro ao salvar advertência no banco de dados: ' + error.message
+      });
+    }
+
+    console.log('✅ Advertência registrada com sucesso:', data[0].id);
+
+    res.json({
+      success: true,
+      message: 'Advertência registrada com sucesso!',
+      data: data[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Erro no cadastro de advertência:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor: ' + error.message
+    });
+  }
+});
+
+// Listar todas as advertências
+app.get('/api/advertencias', async (req, res) => {
+  try {
+    const { busca } = req.query;
+    
+    let query = supabase
+      .from('advertencias')
+      .select('*')
+      .order('data_advertencia', { ascending: false });
+
+    if (busca) {
+      query = query.or(`funcionario_nome.ilike.%${busca}%,funcionario_cpf.ilike.%${busca}%,funcionario_matricula.ilike.%${busca}%`);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('❌ Erro ao buscar advertências:', error);
+      
+      // Se a tabela não existir, retornar array vazio
+      if (error.code === '42P01') {
+        return res.json({
+          success: true,
+          data: [],
+          message: 'Tabela de advertências não encontrada'
+        });
+      }
+      
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data || []
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao listar advertências:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar advertências'
+    });
+  }
+});
+
+// Buscar advertências de um funcionário específico
+app.get('/api/advertencias/funcionario/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from('advertencias')
+      .select('*')
+      .eq('funcionario_id', id)
+      .order('data_advertencia', { ascending: false });
+
+    if (error) {
+      console.error('❌ Erro ao buscar advertências do funcionário:', error);
+      
+      // Se a tabela não existir, retornar array vazio
+      if (error.code === '42P01') {
+        return res.json({
+          success: true,
+          data: []
+        });
+      }
+      
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data || []
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao buscar advertências do funcionário:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar advertências'
+    });
+  }
+});
+
+// Buscar advertência por ID
+app.get('/api/advertencias/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+      .from('advertencias')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      console.error('❌ Erro ao buscar advertência:', error);
+      
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          success: false,
+          error: 'Advertência não encontrada'
+        });
+      }
+      
+      throw error;
+    }
+
+    // Buscar informações atualizadas do funcionário
+    if (data.funcionario_id) {
+      const { data: funcionario } = await supabase
+        .from('funcionarios')
+        .select('*')
+        .eq('id', data.funcionario_id)
+        .single();
+      
+      if (funcionario) {
+        data.funcionario_info = funcionario;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: data
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao buscar advertência:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar advertência'
+    });
+  }
+});
+
+// Excluir advertência
+app.delete('/api/advertencias/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log(`🗑️ Excluindo advertência ID: ${id}`);
+
+    const { error } = await supabase
+      .from('advertencias')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('❌ Erro ao excluir advertência:', error);
+      throw error;
+    }
+
+    console.log('✅ Advertência excluída com sucesso');
+
+    res.json({
+      success: true,
+      message: 'Advertência excluída com sucesso!'
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao excluir advertência:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao excluir advertência'
+    });
+  }
+});
 
 // ===================================================================
 // 🔍 CONSULTA CPF
@@ -1542,11 +1876,19 @@ app.listen(PORT, () => {
   console.log(`🔐 API CPF: Integrada com apicpf.com`);
   console.log(`🏢 API CNPJ: Integrada com open.cnpja.com`);
   console.log(`🖼️  Storage de fotos: fotos-funcionarios`);
+  console.log(`⚠️  Storage de advertências: arquivos-advertencias`);
   console.log(`👥 Sistema de líderes: Ativo com validação por ID`);
   console.log(`👕 Tamanho de fardamento: Suportado`);
   console.log(`👟 Tamanho de calçado: Adicionado (33-47)`);
   console.log(`📁 Upload de fotos: Ativo (máx 2MB)`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/api/health`);
+  console.log('');
+  console.log('🎯 ROTAS DE ADVERTÊNCIAS:');
+  console.log(`⚠️  Criar advertência: POST /api/advertencias`);
+  console.log(`📋 Listar advertências: GET /api/advertencias`);
+  console.log(`👤 Por funcionário: GET /api/advertencias/funcionario/:id`);
+  console.log(`🔍 Detalhes: GET /api/advertencias/:id`);
+  console.log(`🗑️  Excluir: DELETE /api/advertencias/:id`);
   console.log('');
   console.log('🆕 NOVAS FUNCIONALIDADES:');
   console.log(`🔍  Busca Avançada: /api/funcionarios-busca`);
