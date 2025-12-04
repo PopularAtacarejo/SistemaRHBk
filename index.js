@@ -1863,382 +1863,601 @@ app.get('/api/exportar-funcionarios', async (req, res) => {
     });
   }
 });
+
 // ===================================================================
-// 🏥 ROTAS PARA ATESTADOS MÉDICOS (ATUALIZADAS)
+// 🏥 ROTAS PARA ATESTADOS MÉDICOS (CORRIGIDAS)
 // ===================================================================
 
-// Marcar retorno ao trabalho (antecipado ou não)
+// Criar atestado
+app.post('/api/atestados', upload.single('arquivo'), async (req, res) => {
+  try {
+    console.log('📥 Recebendo dados para novo atestado...');
+    
+    const dadosAtestado = req.body;
+    const file = req.file;
+    
+    console.log('📋 Dados do atestado:', {
+      funcionario_id: dadosAtestado.funcionario_id,
+      data_atestado: dadosAtestado.data_atestado,
+      dias_afastamento: dadosAtestado.dias_afastamento,
+      arquivoRecebido: !!file
+    });
+
+    // Validar campos obrigatórios
+    const camposObrigatorios = ['funcionario_id', 'data_atestado', 'dias_afastamento', 'crm_medico', 'motivo'];
+    const camposFaltantes = camposObrigatorios.filter(campo => !dadosAtestado[campo]);
+    
+    if (camposFaltantes.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Campos obrigatórios faltando: ${camposFaltantes.join(', ')}`
+      });
+    }
+
+    // Converter funcionario_id para inteiro
+    const funcionarioId = parseInt(dadosAtestado.funcionario_id);
+    if (isNaN(funcionarioId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID do funcionário inválido'
+      });
+    }
+
+    // Verificar se funcionário existe
+    const { data: funcionario, error: funcError } = await supabase
+      .from('funcionarios')
+      .select('id, nome, cpf, matricula, funcao, setor, empresa')
+      .eq('id', funcionarioId)
+      .single();
+
+    if (funcError || !funcionario) {
+      console.error('❌ Funcionário não encontrado:', funcionarioId);
+      return res.status(404).json({
+        success: false,
+        error: 'Funcionário não encontrado'
+      });
+    }
+
+    // Upload do arquivo (se houver)
+    let arquivoUrl = null;
+    if (file) {
+      try {
+        arquivoUrl = await uploadAtestadoParaStorage(file, funcionarioId);
+        console.log(`✅ Atestado salvo: ${arquivoUrl}`);
+      } catch (uploadError) {
+        console.error(`❌ Erro ao processar arquivo:`, uploadError);
+        return res.status(500).json({
+          success: false,
+          error: `Erro ao fazer upload do arquivo: ${uploadError.message}`
+        });
+      }
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: 'Arquivo do atestado é obrigatório'
+      });
+    }
+
+    // Calcular data de retorno
+    const dataAtestado = new Date(dadosAtestado.data_atestado);
+    const dataRetorno = new Date(dataAtestado);
+    dataRetorno.setDate(dataRetorno.getDate() + parseInt(dadosAtestado.dias_afastamento));
+
+    // Converter registrado_por para inteiro (se existir)
+    const registradoPor = dadosAtestado.registrado_por ? parseInt(dadosAtestado.registrado_por) : null;
+
+    // Preparar dados para inserção
+    const dadosInserir = {
+      funcionario_id: funcionarioId,
+      data_atestado: dadosAtestado.data_atestado,
+      dias_afastamento: parseInt(dadosAtestado.dias_afastamento),
+      data_retorno: dataRetorno.toISOString().split('T')[0],
+      crm_medico: dadosAtestado.crm_medico,
+      motivo: dadosAtestado.motivo,
+      observacoes: dadosAtestado.observacoes || null,
+      arquivo_url: arquivoUrl,
+      status: 'ativo',
+      registrado_por: registradoPor,
+      data_criacao: new Date().toISOString()
+    };
+
+    // Inserir no banco
+    const { data, error } = await supabase
+      .from('atestados')
+      .insert([dadosInserir])
+      .select();
+
+    if (error) {
+      console.error('❌ Erro ao inserir atestado:', error);
+      
+      // Se a tabela não existir, retornar erro específico
+      if (error.code === '42P01') {
+        return res.status(500).json({
+          success: false,
+          error: 'Tabela de atestados não encontrada. Execute o SQL de criação da tabela.'
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Erro ao salvar atestado no banco de dados: ' + error.message
+      });
+    }
+
+    console.log('✅ Atestado registrado com sucesso:', data[0].id);
+
+    res.json({
+      success: true,
+      message: 'Atestado registrado com sucesso!',
+      data: data[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Erro no cadastro de atestado:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor: ' + error.message
+    });
+  }
+});
+
+// Marcar retorno ao trabalho
 app.put('/api/atestados/:id/retornar', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { data_retorno_efetivo, registrado_por } = req.body;
+
+    console.log(`📝 Marcando retorno para atestado ID: ${id}`);
+
+    if (!data_retorno_efetivo) {
+      return res.status(400).json({
+        success: false,
+        error: 'Data de retorno efetivo é obrigatória'
+      });
+    }
+
+    // Converter registrado_por para inteiro
+    const registroRetornoPor = registrado_por ? parseInt(registrado_por) : null;
+
+    // Buscar o atestado atual
+    const { data: atestadoAtual, error: fetchError } = await supabase
+      .from('atestados')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !atestadoAtual) {
+      console.error('❌ Atestado não encontrado:', id);
+      return res.status(404).json({
+        success: false,
+        error: 'Atestado não encontrado'
+      });
+    }
+
+    // Verificar se já retornou
+    if (atestadoAtual.data_retorno_efetivo) {
+      return res.status(400).json({
+        success: false,
+        error: 'Este atestado já foi marcado como retornado anteriormente'
+      });
+    }
+
+    // Verificar se a data de retorno é válida
+    const hoje = new Date().toISOString().split('T')[0];
+    if (data_retorno_efetivo > hoje) {
+      return res.status(400).json({
+        success: false,
+        error: 'Data de retorno não pode ser futura'
+      });
+    }
+
+    // Verificar se é retorno antecipado
+    const retornoAntecipado = data_retorno_efetivo < atestadoAtual.data_retorno;
+
+    // Preparar dados para atualização
+    const dadosAtualizar = {
+      data_retorno_efetivo: data_retorno_efetivo,
+      retorno_antecipado: retornoAntecipado,
+      status: 'encerrado',
+      registro_retorno_por: registroRetornoPor,
+      data_atualizacao: new Date().toISOString()
+    };
+
+    // Atualizar o atestado
+    const { data, error } = await supabase
+      .from('atestados')
+      .update(dadosAtualizar)
+      .eq('id', id)
+      .select();
+
+    if (error) {
+      console.error('❌ Erro ao atualizar atestado:', error);
+      throw error;
+    }
+
+    // Buscar informações do funcionário para log
+    const { data: funcionario } = await supabase
+      .from('funcionarios')
+      .select('nome, matricula')
+      .eq('id', atestadoAtual.funcionario_id)
+      .single();
+
+    console.log(`✅ Retorno confirmado para ${funcionario?.nome || 'funcionário'}:`, {
+      atestadoId: id,
+      retornoEfetivo: data_retorno_efetivo,
+      retornoPrevisto: atestadoAtual.data_retorno,
+      antecipado: retornoAntecipado
+    });
+
+    // Criar log da ação (se a tabela existir)
     try {
-        const { id } = req.params;
-        const { data_retorno_efetivo, registrado_por } = req.body;
-
-        console.log(`📝 Marcando retorno para atestado ID: ${id}`);
-
-        if (!data_retorno_efetivo) {
-            return res.status(400).json({
-                success: false,
-                error: 'Data de retorno efetivo é obrigatória'
-            });
-        }
-
-        // Buscar o atestado atual
-        const { data: atestadoAtual, error: fetchError } = await supabase
-            .from('atestados')
-            .select('*')
-            .eq('id', id)
-            .single();
-
-        if (fetchError || !atestadoAtual) {
-            console.error('❌ Atestado não encontrado:', id);
-            return res.status(404).json({
-                success: false,
-                error: 'Atestado não encontrado'
-            });
-        }
-
-        // Verificar se já retornou
-        if (atestadoAtual.data_retorno_efetivo) {
-            return res.status(400).json({
-                success: false,
-                error: 'Este atestado já foi marcado como retornado anteriormente'
-            });
-        }
-
-        // Verificar se a data de retorno é válida (não pode ser futura)
-        const hoje = new Date().toISOString().split('T')[0];
-        if (data_retorno_efetivo > hoje) {
-            return res.status(400).json({
-                success: false,
-                error: 'Data de retorno não pode ser futura'
-            });
-        }
-
-        // Verificar se é retorno antecipado
-        const retornoAntecipado = data_retorno_efetivo < atestadoAtual.data_retorno;
-
-        // Preparar dados para atualização
-        const dadosAtualizar = {
+      await supabase
+        .from('logs_atestados')
+        .insert([{
+          atestado_id: id,
+          funcionario_id: atestadoAtual.funcionario_id,
+          acao: 'RETORNO_CONFIRMADO',
+          detalhes: JSON.stringify({
             data_retorno_efetivo: data_retorno_efetivo,
+            retorno_previsto: atestadoAtual.data_retorno,
             retorno_antecipado: retornoAntecipado,
-            status: 'encerrado',
-            data_atualizacao: new Date().toISOString()
-        };
-
-        if (registrado_por) {
-            dadosAtualizar.registro_retorno_por = registrado_por;
-        }
-
-        // Atualizar o atestado
-        const { data, error } = await supabase
-            .from('atestados')
-            .update(dadosAtualizar)
-            .eq('id', id)
-            .select();
-
-        if (error) {
-            console.error('❌ Erro ao atualizar atestado:', error);
-            throw error;
-        }
-
-        // Buscar informações do funcionário para log
-        const { data: funcionario } = await supabase
-            .from('funcionarios')
-            .select('nome, matricula')
-            .eq('id', atestadoAtual.funcionario_id)
-            .single();
-
-        console.log(`✅ Retorno confirmado para ${funcionario?.nome || 'funcionário'}:`, {
-            atestadoId: id,
-            retornoEfetivo: data_retorno_efetivo,
-            retornoPrevisto: atestadoAtual.data_retorno,
-            antecipado: retornoAntecipado
-        });
-
-        // Criar log da ação
-        await supabase
-            .from('logs_atestados')
-            .insert([{
-                atestado_id: id,
-                funcionario_id: atestadoAtual.funcionario_id,
-                acao: 'RETORNO_CONFIRMADO',
-                detalhes: JSON.stringify({
-                    data_retorno_efetivo: data_retorno_efetivo,
-                    retorno_previsto: atestadoAtual.data_retorno,
-                    retorno_antecipado: retornoAntecipado,
-                    registrado_por: registrado_por
-                }),
-                data_criacao: new Date().toISOString()
-            }]);
-
-        res.json({
-            success: true,
-            message: retornoAntecipado ? 
-                'Retorno antecipado confirmado com sucesso!' : 
-                'Retorno ao trabalho confirmado com sucesso!',
-            data: data[0],
-            retorno_antecipado: retornoAntecipado
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao marcar retorno do atestado:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Erro interno do servidor: ' + error.message
-        });
+            registrado_por: registroRetornoPor
+          }),
+          data_criacao: new Date().toISOString(),
+          registrado_por: registroRetornoPor
+        }]);
+    } catch (logError) {
+      console.warn('⚠️ Não foi possível criar log:', logError);
     }
+
+    res.json({
+      success: true,
+      message: retornoAntecipado ? 
+        'Retorno antecipado confirmado com sucesso!' : 
+        'Retorno ao trabalho confirmado com sucesso!',
+      data: data[0],
+      retorno_antecipado: retornoAntecipado
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao marcar retorno do atestado:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor: ' + error.message
+    });
+  }
 });
 
-// Rota para buscar atestados por status
+// Listar atestados com correção para inteiros
+app.get('/api/atestados', async (req, res) => {
+  try {
+    const { funcionario, data_inicio, data_fim, status } = req.query;
+    
+    let query = supabase
+      .from('atestados')
+      .select(`
+        *,
+        funcionarios (
+          id,
+          nome,
+          cpf,
+          matricula,
+          empresa,
+          setor,
+          funcao,
+          foto_url
+        )
+      `)
+      .order('data_atestado', { ascending: false });
+
+    // Aplicar filtros
+    if (funcionario) {
+      query = query.ilike('funcionarios.nome', `%${funcionario}%`);
+    }
+    
+    if (data_inicio) {
+      query = query.gte('data_atestado', data_inicio);
+    }
+    
+    if (data_fim) {
+      query = query.lte('data_atestado', data_fim);
+    }
+    
+    if (status === 'afastados') {
+      const hoje = new Date().toISOString().split('T')[0];
+      query = query.is('data_retorno_efetivo', null)
+                .gte('data_retorno', hoje);
+    } else if (status === 'retornados') {
+      query = query.not('data_retorno_efetivo', 'is', null);
+    } else if (status === 'atrasados') {
+      const hoje = new Date().toISOString().split('T')[0];
+      query = query.is('data_retorno_efetivo', null)
+                .lt('data_retorno', hoje);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('❌ Erro ao buscar atestados:', error);
+      
+      // Se a tabela não existir, retornar array vazio
+      if (error.code === '42P01') {
+        return res.json({
+          success: true,
+          data: [],
+          message: 'Tabela de atestados não encontrada'
+        });
+      }
+      
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data || []
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao listar atestados:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar atestados'
+    });
+  }
+});
+
+// Buscar atestados por status
 app.get('/api/atestados/status/:status', async (req, res) => {
-    try {
-        const { status } = req.params;
-        const hoje = new Date().toISOString().split('T')[0];
+  try {
+    const { status } = req.params;
+    const hoje = new Date().toISOString().split('T')[0];
 
-        let query = supabase
-            .from('atestados')
-            .select(`
-                *,
-                funcionarios (
-                    id,
-                    nome,
-                    cpf,
-                    matricula,
-                    empresa,
-                    setor,
-                    funcao,
-                    foto_url
-                )
-            `)
-            .order('data_atestado', { ascending: false });
+    let query = supabase
+      .from('atestados')
+      .select(`
+        *,
+        funcionarios (
+          id,
+          nome,
+          cpf,
+          matricula,
+          empresa,
+          setor,
+          funcao,
+          foto_url
+        )
+      `)
+      .order('data_atestado', { ascending: false });
 
-        // Aplicar filtro por status
-        if (status === 'afastados') {
-            query = query.is('data_retorno_efetivo', null)
-                        .gte('data_retorno', hoje);
-        } else if (status === 'retornados') {
-            query = query.not('data_retorno_efetivo', 'is', null);
-        } else if (status === 'atrasados') {
-            query = query.is('data_retorno_efetivo', null)
-                        .lt('data_retorno', hoje);
-        } else if (status === 'antecipados') {
-            query = query.eq('retorno_antecipado', true);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-            console.error('❌ Erro ao buscar atestados por status:', error);
-            throw error;
-        }
-
-        res.json({
-            success: true,
-            data: data || [],
-            total: data?.length || 0,
-            status: status
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao buscar atestados por status:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Erro ao buscar atestados'
-        });
+    // Aplicar filtro por status
+    if (status === 'afastados') {
+      query = query.is('data_retorno_efetivo', null)
+                .gte('data_retorno', hoje);
+    } else if (status === 'retornados') {
+      query = query.not('data_retorno_efetivo', 'is', null);
+    } else if (status === 'atrasados') {
+      query = query.is('data_retorno_efetivo', null)
+                .lt('data_retorno', hoje);
+    } else if (status === 'antecipados') {
+      query = query.eq('retorno_antecipado', true);
     }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('❌ Erro ao buscar atestados por status:', error);
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data || [],
+      total: data?.length || 0,
+      status: status
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao buscar atestados por status:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar atestados'
+    });
+  }
 });
 
-// Rota para estatísticas de atestados
+// Estatísticas de atestados
 app.get('/api/atestados/estatisticas', async (req, res) => {
-    try {
-        const { empresa, setor, data_inicio, data_fim } = req.query;
-        const hoje = new Date().toISOString().split('T')[0];
+  try {
+    const { empresa, setor, data_inicio, data_fim } = req.query;
+    const hoje = new Date().toISOString().split('T')[0];
 
-        let query = supabase
-            .from('atestados')
-            .select(`
-                *,
-                funcionarios (
-                    nome,
-                    empresa,
-                    setor
-                )
-            `);
+    let query = supabase
+      .from('atestados')
+      .select(`
+        *,
+        funcionarios (
+          nome,
+          empresa,
+          setor
+        )
+      `);
 
-        // Aplicar filtros
-        if (empresa) {
-            query = query.ilike('funcionarios.empresa', `%${empresa}%`);
-        }
-
-        if (setor) {
-            query = query.ilike('funcionarios.setor', `%${setor}%`);
-        }
-
-        if (data_inicio) {
-            query = query.gte('data_atestado', data_inicio);
-        }
-
-        if (data_fim) {
-            query = query.lte('data_atestado', data_fim);
-        }
-
-        const { data: atestados, error } = await query;
-
-        if (error) {
-            console.error('❌ Erro ao buscar estatísticas:', error);
-            throw error;
-        }
-
-        // Calcular estatísticas
-        const estatisticas = {
-            total: atestados?.length || 0,
-            afastados: 0,
-            retornados: 0,
-            atrasados: 0,
-            antecipados: 0,
-            por_empresa: {},
-            por_setor: {},
-            por_mes: {}
-        };
-
-        atestados?.forEach(at => {
-            // Status atual
-            if (at.data_retorno_efetivo) {
-                estatisticas.retornados++;
-                if (at.retorno_antecipado) {
-                    estatisticas.antecipados++;
-                }
-            } else if (at.data_retorno >= hoje) {
-                estatisticas.afastados++;
-            } else {
-                estatisticas.atrasados++;
-            }
-
-            // Por empresa
-            const empresa = at.funcionarios?.empresa || 'Não informada';
-            if (!estatisticas.por_empresa[empresa]) {
-                estatisticas.por_empresa[empresa] = 0;
-            }
-            estatisticas.por_empresa[empresa]++;
-
-            // Por setor
-            const setor = at.funcionarios?.setor || 'Não informado';
-            if (!estatisticas.por_setor[setor]) {
-                estatisticas.por_setor[setor] = 0;
-            }
-            estatisticas.por_setor[setor]++;
-
-            // Por mês
-            const dataAtestado = new Date(at.data_atestado);
-            const mesAno = `${dataAtestado.getMonth() + 1}/${dataAtestado.getFullYear()}`;
-            if (!estatisticas.por_mes[mesAno]) {
-                estatisticas.por_mes[mesAno] = 0;
-            }
-            estatisticas.por_mes[mesAno]++;
-        });
-
-        res.json({
-            success: true,
-            data: estatisticas,
-            periodo: {
-                data_inicio,
-                data_fim,
-                empresa,
-                setor
-            }
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao buscar estatísticas:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Erro ao buscar estatísticas'
-        });
+    // Aplicar filtros
+    if (empresa) {
+      query = query.ilike('funcionarios.empresa', `%${empresa}%`);
     }
+
+    if (setor) {
+      query = query.ilike('funcionarios.setor', `%${setor}%`);
+    }
+
+    if (data_inicio) {
+      query = query.gte('data_atestado', data_inicio);
+    }
+
+    if (data_fim) {
+      query = query.lte('data_atestado', data_fim);
+    }
+
+    const { data: atestados, error } = await query;
+
+    if (error) {
+      console.error('❌ Erro ao buscar estatísticas:', error);
+      throw error;
+    }
+
+    // Calcular estatísticas
+    const estatisticas = {
+      total: atestados?.length || 0,
+      afastados: 0,
+      retornados: 0,
+      atrasados: 0,
+      antecipados: 0,
+      por_empresa: {},
+      por_setor: {},
+      por_mes: {}
+    };
+
+    atestados?.forEach(at => {
+      // Status atual
+      if (at.data_retorno_efetivo) {
+        estatisticas.retornados++;
+        if (at.retorno_antecipado) {
+          estatisticas.antecipados++;
+        }
+      } else if (at.data_retorno >= hoje) {
+        estatisticas.afastados++;
+      } else {
+        estatisticas.atrasados++;
+      }
+
+      // Por empresa
+      const empresa = at.funcionarios?.empresa || 'Não informada';
+      if (!estatisticas.por_empresa[empresa]) {
+        estatisticas.por_empresa[empresa] = 0;
+      }
+      estatisticas.por_empresa[empresa]++;
+
+      // Por setor
+      const setor = at.funcionarios?.setor || 'Não informado';
+      if (!estatisticas.por_setor[setor]) {
+        estatisticas.por_setor[setor] = 0;
+      }
+      estatisticas.por_setor[setor]++;
+
+      // Por mês
+      if (at.data_atestado) {
+        const dataAtestado = new Date(at.data_atestado);
+        const mesAno = `${dataAtestado.getMonth() + 1}/${dataAtestado.getFullYear()}`;
+        if (!estatisticas.por_mes[mesAno]) {
+          estatisticas.por_mes[mesAno] = 0;
+        }
+        estatisticas.por_mes[mesAno]++;
+      }
+    });
+
+    res.json({
+      success: true,
+      data: estatisticas,
+      periodo: {
+        data_inicio,
+        data_fim,
+        empresa,
+        setor
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao buscar estatísticas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar estatísticas'
+    });
+  }
 });
 
-// Rota para funcionários atualmente afastados
-app.get('/api/funcionarios/afastados', async (req, res) => {
-    try {
-        const hoje = new Date().toISOString().split('T')[0];
+// Excluir atestado
+app.delete('/api/atestados/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
 
-        // Buscar atestados ativos (afastados)
-        const { data: atestadosAtivos, error } = await supabase
-            .from('atestados')
-            .select(`
-                *,
-                funcionarios (
-                    id,
-                    nome,
-                    cpf,
-                    matricula,
-                    empresa,
-                    setor,
-                    funcao,
-                    foto_url,
-                    lider_responsavel
-                )
-            `)
-            .is('data_retorno_efetivo', null)
-            .gte('data_retorno', hoje)
-            .order('data_retorno', { ascending: true });
+    console.log(`🗑️ Excluindo atestado ID: ${id}`);
 
-        if (error) {
-            console.error('❌ Erro ao buscar funcionários afastados:', error);
-            throw error;
-        }
+    const { error } = await supabase
+      .from('atestados')
+      .delete()
+      .eq('id', id);
 
-        // Buscar informações dos líderes
-        const funcionariosComLider = await Promise.all(
-            atestadosAtivos.map(async (at) => {
-                const funcionario = at.funcionarios;
-                let liderInfo = null;
-
-                if (funcionario?.lider_responsavel) {
-                    const { data: lider } = await supabase
-                        .from('funcionarios')
-                        .select('nome, matricula')
-                        .eq('id', funcionario.lider_responsavel)
-                        .single();
-
-                    if (lider) {
-                        liderInfo = lider;
-                    }
-                }
-
-                // Calcular dias restantes
-                const diasRestantes = Math.ceil(
-                    (new Date(at.data_retorno) - new Date(hoje)) / (1000 * 60 * 60 * 24)
-                );
-
-                return {
-                    ...at,
-                    funcionarios: {
-                        ...funcionario,
-                        lider_info: liderInfo
-                    },
-                    dias_restantes: diasRestantes
-                };
-            })
-        );
-
-        res.json({
-            success: true,
-            data: funcionariosComLider,
-            total: funcionariosComLider.length,
-            data_consulta: hoje
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao buscar funcionários afastados:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Erro ao buscar funcionários afastados'
-        });
+    if (error) {
+      console.error('❌ Erro ao excluir atestado:', error);
+      throw error;
     }
+
+    console.log('✅ Atestado excluído com sucesso');
+
+    res.json({
+      success: true,
+      message: 'Atestado excluído com sucesso!'
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao excluir atestado:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao excluir atestado'
+    });
+  }
 });
 
+// Buscar atestado por ID
+app.get('/api/atestados/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
 
+    const { data, error } = await supabase
+      .from('atestados')
+      .select(`
+        *,
+        funcionarios (
+          id,
+          nome,
+          cpf,
+          matricula,
+          empresa,
+          setor,
+          funcao,
+          foto_url
+        )
+      `)
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      console.error('❌ Erro ao buscar atestado:', error);
+      
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({
+          success: false,
+          error: 'Atestado não encontrado'
+        });
+      }
+      
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao buscar atestado:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar atestado'
+    });
+  }
+});
 
 // ===================================================================
 // 🚀 INICIALIZAÇÃO DO SERVIDOR
@@ -2286,4 +2505,5 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
 
